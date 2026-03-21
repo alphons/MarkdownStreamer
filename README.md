@@ -64,7 +64,6 @@ streamer.stop(); // halts markdownasync() immediately
 | `new MarkdownStreamer(rootEl)` | Create a new instance. Clears `rootEl` and attaches the parser. |
 | `markdown(text)` | Render the full text synchronously (instant). |
 | `markdownasync(text)` | Render the text asynchronously with animated streaming. Returns a `Promise`. |
-| `processChar(ch)` | Feed a single character into the parser. |
 | `finalize()` | Flush any remaining state and close open elements. Always call this after rendering. |
 | `setSpeed(n)` | Set streaming speed (1–100). Controls the batch size and delay between frames. |
 | `stop()` | Abort an in-progress `markdownasync()` call. |
