@@ -444,13 +444,13 @@ class MarkdownStreamer {
       default:
         // Ordered list
         if (p[0] >= '1' && p[0] <= '9') {
-          if (p.length === 1) return;
-          if (p.length === 2 && (p[1] === '.' || p[1] === ')')) return;
-          if (p.length === 3 && (p[1] === '.' || p[1] === ')') && p[2] === ' ') {
-            this.openListItem('ol', this.lineIndent); this._bd(); return;
-          }
-          if (p.length >= 2 && p[1] !== '.' && p[1] !== ')') { this.fallbackToParagraph(); return; }
-          return;
+          let i = 1;
+          while (i < p.length && p[i] >= '0' && p[i] <= '9') i++;
+          if (i === p.length) return;
+          if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this.fallbackToParagraph(); return; }
+          if (i + 1 === p.length) return;
+          if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent); this._bd(); return; }
+          this.fallbackToParagraph(); return;
         }
         this._blockDefault(ch);
     }
