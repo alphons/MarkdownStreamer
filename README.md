@@ -68,6 +68,69 @@ streamer.stop(); // halts markdownasync() immediately
 | `setSpeed(n)` | Set streaming speed (1–100). Controls the batch size and delay between frames. |
 | `stop()` | Abort an in-progress `markdownasync()` call. |
 
+### Real-world: LLM chat via Server-Sent Events
+
+A common pattern is to stream LLM output chunk by chunk using the browser's `EventSource` API (SSE). Each incoming chunk is fed into `markdownasync()`. Because chunks arrive asynchronously and out of order, the calls are chained through a `Promise` so they are always processed sequentially.
+
+```js
+var streamer;
+let eventSource = new EventSource('/api/Chat/Events');
+
+// Chain incoming chunks so they are rendered in order
+let processingPromise = Promise.resolve();
+
+eventSource.onmessage = function (event) {
+  const text = event.data.replace(/\\n/g, '\n');
+  processingPromise = processingPromise.then(() => streamer.markdownasync(text));
+};
+```
+
+When the user sends a message, a new `div` and `MarkdownStreamer` are created for the assistant reply, and `setSpeed()` is tuned for near-real-time output:
+
+```js
+async function sendMessage(text) {
+  // Render the user message instantly
+  const divUser = document.createElement('div');
+  divUser.classList.add('user');
+  const userStreamer = new MarkdownStreamer(divUser);
+  userStreamer.markdown(text);
+  userStreamer.finalize();
+  output.append(divUser);
+
+  // Prepare the assistant reply container
+  const divAssistant = document.createElement('div');
+  divAssistant.classList.add('assistant');
+  streamer = new MarkdownStreamer(divAssistant);
+  streamer.setSpeed(95); // near-real-time
+  output.append(divAssistant);
+
+  // POST to the API — SSE events will drive the streamer above
+  await fetch('/api/Chat/Say', { method: 'POST', body: JSON.stringify({ text }) });
+}
+```
+
+Existing chat history (already complete messages) is rendered synchronously with `markdown()` + `finalize()`:
+
+```js
+function renderHistory(messages) {
+  messages.forEach(item => {
+    if (item.role === 'system') return;
+    const div = document.createElement('div');
+    div.classList.add(item.role);            // 'user' or 'assistant'
+    const s = new MarkdownStreamer(div);
+    s.markdown(item.content);
+    s.finalize();
+    output.append(div);
+  });
+}
+```
+
+**Key points:**
+- Use **one `MarkdownStreamer` instance per message bubble** — do not reuse across messages.
+- Chain `markdownasync()` calls via a `Promise` when chunks arrive concurrently.
+- Use `markdown()` + `finalize()` for already-complete text (history, user input).
+- `setSpeed(95)` gives smooth, near-real-time LLM output animation.
+
 ---
 
 ## Implemented Markdown features
