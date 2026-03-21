@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MD4 Streamer</title>
+<link rel="stylesheet" href="md4.css?1" />
+<script src="md4.js" defer></script>
+<script src="md4start.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>MD4 Streamer</h1>
+  <div class="controls">
+    <label>Speed <input type="range" id="speedSlider" min="1" max="100" value="90"></label>
+    <span class="status" id="statusLabel">klaar</span>
+    <button id="themeBtn">Light</button>
+    <button id="streamBtn">Stream</button>
+    <button id="stopBtn" disabled>Stop</button>
+  </div>
+</header>
+<div class="pane pane-source">
+<textarea id="source" spellcheck="false"># MD Streamer — Volledig overzicht
+
+## Koppen H1 t/m H6
+
+# H1 Hoofdtitel
+## H2 Sectie
+### H3 Subsectie
+#### H4 Paragraaf
+##### H5 Subparagraaf
+###### H6 Klein kopje
+
+Setext H1
+=========
+
+Setext H2
+---------
+
+## Inline opmaak
+
+**vet**, *cursief*, __onderstreept__, ~~doorgehaald~~, ==gemarkeerd==
+
+`inline code`, x^sup^, H~sub~
+
+Combinaties: **vet en *cursief* samen**, ~~doorgehaald **vet**~~
+
+Backslash escape: \*geen italic\*, \`geen code\`, \[geen link\]
+
+HTML entities: &amp;copy; &amp;amp; &amp;lt; &amp;gt; &amp;euro; &amp;mdash; &amp;#128512;
+
+Toetsen: Druk `Ctrl+S` om op te slaan.
+
+## Hard line break
+
+Eerste regel (twee spaties)  
+Tweede regel direct eronder
+
+Backslash break: regel één\
+regel twee direct eronder
+
+## Links
+
+[Gewone link](https://www.google.com)
+
+[Link met **vette** tekst en *cursief*](https://www.anthropic.com)
+
+Autolink: <https://example.com>
+
+E-mail: <info@example.com>
+
+Bare URL: https://www.wikipedia.org wordt automatisch een link.
+
+Referentielink: [Google][google] en [Anthropic][ant]
+
+[google]: https://www.google.com
+[ant]: https://www.anthropic.com "Anthropic website"
+
+## Afbeeldingen
+
+![Random Photo](https://picsum.photos/200/300)
+
+Afbeelding als link:
+
+[![Wikipedia logo](https://nl.wikipedia.org/static/images/icons/wikipedia.png)](https://www.wikipedia.org)
+
+## Blockquotes (genest)
+
+> Niveau 1 — eerste quote
+>
+> Nog steeds niveau 1
+>
+> > Niveau 2 dieper genest
+> >
+> > > Niveau 3 nog dieper
+
+## Lijsten
+
+- Item A
+- Item B
+  - Sub B1
+  - Sub B2
+    - Diep B2a
+- Item C
+
+1. Eerste
+2. Tweede
+   1. Sub 2a
+   2. Sub 2b
+3. Derde
+
+Gemengd:
+- Fruit
+  1. Appel
+  2. Peer
+- Groente
+
+## Takenlijst
+
+- [x] Gedaan
+- [ ] Open taak
+- [x] Ook klaar
+- [ ] Nog te doen
+
+## Code
+
+```javascript
+function fibonacci(n) {
+  if (n <= 1) return n;
+  return fibonacci(n - 1) + fibonacci(n - 2);
+}
+```
+
+```python
+def hello(name: str) -> str:
+    return f"Hallo, {name}!"
+```
+
+~~~css
+body { color: #0e0e10; }
+~~~
+
+## Tabel met uitlijning
+
+| Links        | Midden       |  Rechts | Standaard |
+|:-------------|:------------:|--------:|-----------|
+| cel A        | gecentreerd  |      42 | tekst     |
+| lang item    | midden       |   1.234 | gewoon    |
+| **vet**      | *cursief*    |  `code` | normaal   |
+
+## Horizontale lijn
+
+---
+
+***
+
+## Definitielijst
+
+Markdown
+: Een lichtgewicht opmaaktaal voor het web
+
+HTML
+: HyperText Markup Language
+: De structuurtaal van het web
+
+## Footnotes
+
+Dit heeft een voetnoot.[^1] En een tweede.[^twee]
+
+[^1]: Eerste voetnoot met uitleg.
+[^twee]: Tweede voetnoot, iets langer van tekst.
+
+## Afkortingen
+
+De HTML spec en CSS worden dagelijks gebruikt.
+
+*[HTML]: HyperText Markup Language
+*[CSS]: Cascading Style Sheets
+
+## Details / Samenvatting
+
+<details>
+<summary>Klik om uit te klappen</summary>
+Verborgen inhoud die pas zichtbaar is na klikken.
+</details>
+
+## Nieuw in v4
+
+***Vet én cursief*** tegelijk met triple asterisk.
+
+Thematische breek met spaties: 
+
+- - -
+
+_ _ _
+
+Sluitende hashes in heading: `## Titel ##`
+
+## Titel ##
+
+Bestelling met haakjes:
+
+1) Eerste item
+2) Tweede item
+
+Impliciete referentielink: [Google]
+
+[Google]: https://www.google.com
+
+Inline HTML comment: voor <!-- verborgen tekst --> na.
+
+Bare URL met leesteken: ga naar https://example.com. Klaar.
+
+4-spatie code block:
+
+    dit is een code block
+    door 4 spaties inspringing
+
+4-tilde fence:
+
+~~~~
+dit sluit ook met 4 tildes
+~~~~
+
+Einde van de demo.
+</textarea>
+</div>
+<div class="pane">
+  <div id="output" class="pane-output"></div>
+</div>
+</body>
+</html>

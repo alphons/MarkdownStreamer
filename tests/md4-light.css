@@ -1,0 +1,27 @@
+/* Light theme for .pane-output — standalone usable, include after md4.css or on its own */
+.pane-output {
+  --accent:   #0070f3;
+  --text:     #111827;
+  --text-dim: #6b7280;
+  --code-bg:  #f3f4f6;
+  --border:   #e5e7eb;
+  background: #ffffff;
+  color: #111827;
+}
+.pane-output strong   { color: #000; }
+.pane-output code     { color: #0550ae; background: #f3f4f6; }
+.pane-output pre      { background: #f8f9fa; border-color: #e5e7eb; border-left-color: #0070f3; color: #24292f; }
+.pane-output pre code { color: inherit; background: none; }
+.pane-output blockquote { border-left-color: #0070f3; color: #6b7280; }
+.pane-output blockquote blockquote { border-left-color: #5588cc; }
+.pane-output blockquote blockquote blockquote { border-left-color: #9966aa; }
+.pane-output a        { color: #0070f3; text-decoration-color: rgba(0,112,243,.3); }
+.pane-output a:hover  { color: #0051bb; text-decoration-color: #0051bb; }
+.pane-output dt       { color: #111827; }
+.pane-output th       { background: #f3f4f6; color: #0070f3; }
+.pane-output tr:nth-child(even) td { background: #fafafa; }
+.pane-output kbd      { background: #f3f4f6; border-color: #d1d5db; color: #111827; }
+.pane-output summary  { color: #0070f3; }
+.pane-output .fn-ref  { color: #0070f3; }
+.pane-output li.task-item input[type=checkbox] { border-color: #111827; }
+.pane-output li.task-item input[type=checkbox]:checked::after { border-color: #fff; }
