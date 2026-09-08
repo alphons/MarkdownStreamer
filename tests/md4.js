@@ -1,7 +1,7 @@
 /**
  * md v4.0.1 - a markdown streaming parser
  * Copyright (c) 2025-2026, Alphons van der Heijden
- * https://github.com/alphons/MarkdownStreamer
+ * https://git.heijden.com/alphons/MarkdownStreamer.git
  */
 
 'use strict';
