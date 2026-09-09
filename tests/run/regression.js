@@ -407,6 +407,29 @@ test('content before a fence-char run on the same line is not itself withheld', 
   assert.match(render('```\naaa```\n```\n'), /<pre><code>aaa```\n<\/code><\/pre>/);
 });
 
+// ── Unresolved end-of-line pending content must not be silently lost ──────
+test('a too-short marker run on its own line (not a valid hr/list) is not discarded', () => {
+  // Regression: "**" (2 stars) is too short for a thematic break and never
+  // gets decided mid-line either; onNewline's pending-fallback chain had no
+  // catch-all case, so lines like this vanished entirely.
+  const html = render('--\n**\n__\n');
+  assert.match(html, /<p>-- \*\* __<\/p>/);
+});
+
+test('a join-space is still correctly applied across the newline pending-fallback path', () => {
+  // Regression: needsJoinSpace was reset at the top of onNewline() before
+  // this same call's own pending-fallback logic (further down) got a
+  // chance to read the value the PREVIOUS line's onNewline had set.
+  const html = render('--\n**\n');
+  assert.match(html, /-- \*\*/);
+});
+
+test('a thematic-break-shaped line indented 4+ inside an open paragraph stays continuation text', () => {
+  const html = render('Foo\n    ***\n');
+  assert.doesNotMatch(html, /<hr>/);
+  assert.match(html, /<p>Foo \*\*\*<\/p>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

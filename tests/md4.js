@@ -89,7 +89,7 @@ class MarkdownStreamer {
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlTag = null;
 
     this.sepWatch = false; this.sepFailed = false; this.sepRowEl = null; this.sepBuf = '';
-    this.needsJoinSpace = false;
+    this.needsJoinSpace = false; this.hadJoinSpace = false;
     this.codeCloseRun = 0;
   }
 
@@ -152,6 +152,12 @@ class MarkdownStreamer {
 
   // ── Newline ────────────────────────────────────────────────────────────────
   onNewline() {
+    // Captured before resetting: reflects whether the PREVIOUS line left an
+    // open paragraph/list-item/definition wanting a soft-break join space —
+    // needed below by _continueOrFallback(), which runs later in this same
+    // call (for this line's own unresolved-pending fallback) and would
+    // otherwise only ever see the reset value, never the real one.
+    this.hadJoinSpace = this.needsJoinSpace;
     this.needsJoinSpace = false;
     if (this.defPending) { this.flushDefPending(); this.resetLine(); return; }
 
@@ -206,7 +212,14 @@ class MarkdownStreamer {
 
     if (!this.blockDecided && this.pending) {
       const p = this.pending;
-      if (p[0] === '>') {
+      const contTag = this.dom.currentTag();
+      // 4+ columns of indentation is too much to interrupt/continue as any
+      // of these block constructs while a paragraph/list-item/definition is
+      // already open — it's just lazy-continuation text (matches the same
+      // rule already applied to setext underlines).
+      if ((contTag === 'P' || contTag === 'LI' || contTag === 'DD') && this.lineIndent >= 4) {
+        this._continueOrFallback();
+      } else if (p[0] === '>') {
         const { level } = this._bqLevel(p);
         if (level > 0) { this.ensureBlockquote(level); this.openParagraph(); }
       } else if ((p[0] === '`' || p[0] === '~') && p.length >= 3 && p.split('').every(c => c === p[0])) {
@@ -224,12 +237,13 @@ class MarkdownStreamer {
         this.makeHr();
       } else if (p[0] === '-' && /^- /.test(p)) {
         this.openUlDecided(p.slice(2), '-');
-      } else if (p[0] === '[') {
-        const tag = this.dom.currentTag();
-        if (tag === 'P' || tag === 'LI' || tag === 'DD') {
-          if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
-          this.feedPendingAsInline(); this.blockDecided = true;
-        } else this.fallbackToParagraph();
+      } else {
+        // No block construct matched (this covers "[" left unresolved, a
+        // "**"/"__" run too short to be a thematic break, or anything else
+        // not recognized) — it's just text, and must not be silently
+        // discarded: continue the open paragraph/list-item/definition if
+        // there is one, else start a new paragraph.
+        this._continueOrFallback();
       }
       this.pending = '';
     }
@@ -1061,6 +1075,18 @@ class MarkdownStreamer {
   // ── Small shared helpers ───────────────────────────────────────────────────
   makeHr()              { this.closeBlock(); this.dom.current.appendChild(document.createElement('hr')); this.lastBlockEl = null; }
   fallbackToParagraph() { this.closeBlock(); this.openParagraph(); this.blockDecided = true; this.feedPendingAsInline(); }
+
+  // Used by onNewline's end-of-line "nothing matched" fallback: continue
+  // the already-open paragraph/list-item/definition (with the usual
+  // soft-break join space) instead of starting a new one, matching how
+  // decideBlock's own _blockDefault() treats an ordinary continuation line.
+  _continueOrFallback() {
+    const tag = this.dom.currentTag();
+    if (tag === 'P' || tag === 'LI' || tag === 'DD') {
+      if (this.hadJoinSpace) { this.hadJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
+      this.feedPendingAsInline(); this.blockDecided = true;
+    } else this.fallbackToParagraph();
+  }
   initAnchor(a)         { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
   flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref' && !(d.key in this.refDefs)) this.refDefs[d.key] = this._parseUrlBuf(d.value); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
