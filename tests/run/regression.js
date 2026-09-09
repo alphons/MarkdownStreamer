@@ -359,6 +359,21 @@ test('an indented code block is fully literal — no emphasis, links, entities, 
   assert.doesNotMatch(html, /<em>|<a /);
 });
 
+// ── Tabs (advance to the next multiple-of-4 column for indentation) ────────
+test('a leading tab is enough indentation to start an indented code block', () => {
+  const html = render('\tfoo\tbaz\t\tbim');
+  assert.match(html, /<pre><code>foo\tbaz\t\tbim/, 'tabs inside the content stay literal, unexpanded');
+});
+
+test('2 spaces + a tab reach column 4 and start an indented code block', () => {
+  assert.match(render('  \tfoo'), /<pre><code>foo/);
+});
+
+test('a tab after "#" is a valid ATX heading separator', () => {
+  assert.match(render('#\tFoo'), /<h1>Foo<\/h1>/);
+});
+
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

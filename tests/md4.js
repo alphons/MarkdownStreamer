@@ -66,7 +66,7 @@ class MarkdownStreamer {
     this.root = rootEl;
     this.dom  = new DomStack(rootEl);
 
-    this.linePos = 0; this.lineIndent = 0; this.blockDecided = false;
+    this.linePos = 0; this.lineIndent = 0; this.leadingWsChars = 0; this.blockDecided = false;
     this.pending = ''; this.lastBlockEl = null; this.lineStart = true;
     this.listStack = [];
     this.inlinePending = ''; this.textNode = null;
@@ -121,9 +121,14 @@ class MarkdownStreamer {
     if (this.lineStart) this.lineStart = false;
 
     if (!this.blockDecided) {
-      if (ch === ' ' && this.linePos === this.lineIndent + 1) {
-        this.lineIndent++;
-        if (this.lineIndent === 4 && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
+      // A tab, for indentation purposes, advances to the next multiple-of-4
+      // column rather than counting as a single space (CommonMark: tabs
+      // aren't expanded in the output, but do behave like spaces when
+      // whitespace defines block structure).
+      if ((ch === ' ' || ch === '\t') && this.linePos === this.leadingWsChars + 1) {
+        this.leadingWsChars++;
+        this.lineIndent = ch === '\t' ? (Math.floor(this.lineIndent / 4) + 1) * 4 : this.lineIndent + 1;
+        if (this.lineIndent >= 4 && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
           if (!this.inIndentCode) {
             this.closeBlock();
             const pre = this.dom.push('pre');
@@ -309,7 +314,7 @@ class MarkdownStreamer {
   }
 
   resetLine() {
-    this.linePos = 0; this.lineIndent = 0; this.blockDecided = false;
+    this.linePos = 0; this.lineIndent = 0; this.leadingWsChars = 0; this.blockDecided = false;
     this.pending = ''; this.inlinePending = ''; this.atxLevel = 0;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.inCell = false; this.tablePipePending = false; this.trailingSpaces = 0;
@@ -338,7 +343,7 @@ class MarkdownStreamer {
     switch (p[0]) {
       case '#':
         if (ch === '#' && p.length <= 6) return;
-        if (ch === ' ' && p.length >= 2 && /^#{1,6}$/.test(p.slice(0,-1))) {
+        if ((ch === ' ' || ch === '\t') && p.length >= 2 && /^#{1,6}$/.test(p.slice(0,-1))) {
           const level = p.length - 1;
           this.closeBlock(); this.listStack = [];
           const h = this.dom.push('h' + Math.min(level, 6)); this.lastBlockEl = h;
@@ -529,7 +534,7 @@ class MarkdownStreamer {
     }
     if (this.hrWatch) {
       if (ch === this.hrChar) this.hrCount++;
-      else if (ch !== ' ') this.hrFailed = true;
+      else if (ch !== ' ' && ch !== '\t') this.hrFailed = true;
       return;
     }
     if (this.defPending) { this.defPending.value += ch; return; }
