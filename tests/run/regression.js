@@ -200,6 +200,31 @@ test('emphasis flanking also works for list-item and blockquote inline text', ()
   assert.match(render('> *foo* bar'), /<em>foo<\/em> bar/);
 });
 
+// ── Link/image URL and title parsing ───────────────────────────────────────
+test('a reference-link definition splits the title out of the href', () => {
+  const html = render('[foo][bar]\n\n[bar]: /url "title"');
+  assert.match(html, /<a[^>]*href="\/url"[^>]*title="title"[^>]*>foo<\/a>/);
+  assert.doesNotMatch(html, /&quot;title&quot;/);
+});
+
+test('the first of two duplicate reference-link definitions wins', () => {
+  const html = render('[foo]: /url1\n\n[foo]: /url2\n\n[bar][foo]');
+  assert.match(html, /href="\/url1"/);
+});
+
+test('balanced parens inside an inline link URL stay part of the URL', () => {
+  assert.match(render('[link](foo(and(bar)))'), /href="foo\(and\(bar\)\)"/);
+});
+
+test('backslash-escaped parens in an inline link URL are unescaped', () => {
+  assert.match(render('[link](foo\\(and\\(bar\\))'), /href="foo\(and\(bar\)"/);
+});
+
+test('an angle-bracket link destination strips the brackets and encodes spaces', () => {
+  assert.match(render('[link](</my uri>)'), /href="\/my%20uri"/);
+  assert.match(render('[link](<>)'), /href=""/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

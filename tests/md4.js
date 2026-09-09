@@ -95,7 +95,8 @@ class MarkdownStreamer {
   _bd()              { this.blockDecided = true; this.pending = ''; }
   _pop(el)           { this.dom.popTo(el); this.dom.pop(); }
   _popMarkers()      { while (this.dom.current._mdMarker) this.dom.pop(); }
-  _resetLinkUrl()    { this.linkState = null; this.urlBuf = ''; this.textNode = null; }
+  _resetLinkUrl()    { this.linkState = null; this.urlBuf = ''; this.textNode = null; this._resetUrlParse(); }
+  _resetUrlParse()   { this.urlAngle = undefined; this.urlAngleValue = null; this.urlParenDepth = 0; this.urlEscapeNext = false; }
   _resetSetext()     { this.setextWatch = false; this.setextBuf = ''; this.setextChar = ''; this.setextFailed = false; }
   _resetHr()         { this.hrWatch = false; this.hrChar = ''; this.hrCount = 0; this.hrFailed = false; }
   _doneTaskCheck()   { this.taskCheckDone = true; this.taskCheckBuf = null; }
@@ -680,13 +681,14 @@ class MarkdownStreamer {
         return;
 
       case 'img_expect_paren':
-        if (ch === '(') { this.linkState = 'img_url'; this.urlBuf = ''; }
+        if (ch === '(') { this.linkState = 'img_url'; this.urlBuf = ''; this._resetUrlParse(); }
         else { this.appendToTextNode('![' + this.linkBuf + ']' + ch); this.linkState = null; this.linkIsImage = false; this.linkBuf = ''; }
         return;
 
-      case 'img_url':
-        if (ch === ')') {
-          const { url: iUrl, title: iTitle } = this._parseUrlBuf();
+      case 'img_url': {
+        const raw = this._feedUrlChar(ch);
+        if (raw !== null) {
+          const { url: iUrl, title: iTitle } = this._parseUrlBuf(raw);
           const img = document.createElement('img');
           img.src = iUrl; img.alt = this.linkBuf;
           if (iTitle) img.title = iTitle;
@@ -695,8 +697,10 @@ class MarkdownStreamer {
           this.dom.current.appendChild(img);
           this.textNode = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
           this.linkState = insideLink ? 'label_open' : null;
-        } else { this.urlBuf += ch; }
+          this._resetUrlParse();
+        }
         return;
+      }
 
       case 'label_open':
         if (ch === '!') { this.linkState = 'bang'; this.linkIsImage = true; return; }
@@ -725,7 +729,7 @@ class MarkdownStreamer {
         return;
 
       case 'expect_paren':
-        if (ch === '(') { this.linkState = 'url'; this.urlBuf = ''; }
+        if (ch === '(') { this.linkState = 'url'; this.urlBuf = ''; this._resetUrlParse(); }
         else if (ch === '[') { this.linkState = 'ref_id'; this.urlBuf = ''; }
         else {
           const a = this.dom.find('A');
@@ -738,10 +742,10 @@ class MarkdownStreamer {
       case 'ref_id':
         if (ch === ']') {
           const refKey = (this.urlBuf.trim() || this.linkBuf.trim()).toLowerCase();
-          const url = this.refDefs[refKey];
+          const def = this.refDefs[refKey];
           const a = this.dom.find('A');
           if (a) {
-            if (url) a.href = url;
+            if (def) { a.href = def.url; if (def.title) a.title = def.title; }
             else { a.href = '#'; a.dataset.refKey = refKey; }
             this._pop(a);
           }
@@ -749,14 +753,16 @@ class MarkdownStreamer {
         } else { this.urlBuf += ch; }
         return;
 
-      case 'url':
-        if (ch === ')') {
-          const { url, title } = this._parseUrlBuf();
+      case 'url': {
+        const raw = this._feedUrlChar(ch);
+        if (raw !== null) {
+          const { url, title } = this._parseUrlBuf(raw);
           const a = this.dom.find('A');
           if (a) { a.href = url; if (title) a.title = title; this._pop(a); }
           this._resetLinkUrl();
-        } else { this.urlBuf += ch; }
+        }
         return;
+      }
     }
   }
 
@@ -771,8 +777,37 @@ class MarkdownStreamer {
     if (extraCh !== null) this.appendToTextNode(extraCh);
   }
 
-  _parseUrlBuf() {
-    const raw = this.urlBuf.trim();
+  // Feeds one character of a `(...)` inline link/image destination.
+  // Handles backslash escapes, `<angle-bracket>` destinations (spaces
+  // percent-encoded, no paren-balancing needed inside), and balanced
+  // parens in the unwrapped form (foo(bar) stays part of the URL).
+  // Returns the raw "url [title]" string once the closing, unnested ')'
+  // is reached, else null (still accumulating).
+  _feedUrlChar(ch) {
+    if (this.urlEscapeNext) { this.urlBuf += ch; this.urlEscapeNext = false; return null; }
+    if (ch === '\\') { this.urlEscapeNext = true; return null; }
+    if (this.urlAngle === undefined) {
+      this.urlAngle = ch === '<';
+      if (this.urlAngle) return null;
+    }
+    if (this.urlAngle && this.urlAngleValue === null) {
+      if (ch === '>') { this.urlAngleValue = this.urlBuf.replace(/ /g, '%20'); this.urlBuf = ''; }
+      else this.urlBuf += ch;
+      return null;
+    }
+    if (!this.urlAngle) {
+      if (ch === '(') { this.urlParenDepth++; this.urlBuf += ch; return null; }
+      if (ch === ')' && this.urlParenDepth > 0) { this.urlParenDepth--; this.urlBuf += ch; return null; }
+    }
+    if (ch === ')') {
+      return this.urlAngleValue !== null ? `${this.urlAngleValue} ${this.urlBuf}` : this.urlBuf;
+    }
+    this.urlBuf += ch;
+    return null;
+  }
+
+  _parseUrlBuf(raw = this.urlBuf) {
+    raw = raw.trim();
     const m = raw.match(/^(.*?)\s+["'](.*?)["']$/);
     return { url: m ? m[1] : raw, title: m ? m[2] : null };
   }
@@ -871,7 +906,7 @@ class MarkdownStreamer {
   makeHr()              { this.closeBlock(); this.dom.current.appendChild(document.createElement('hr')); this.lastBlockEl = null; }
   fallbackToParagraph() { this.closeBlock(); this.openParagraph(); this.blockDecided = true; this.feedPendingAsInline(); }
   initAnchor(a)         { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
-  flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref') this.refDefs[d.key] = d.value.trim(); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
+  flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref' && !(d.key in this.refDefs)) this.refDefs[d.key] = this._parseUrlBuf(d.value); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
   openUlDecided(s)      { this.openListItem('ul', this.lineIndent); this._bd(); for (const c of s) { this.onInlineChar(c); this.lastChar = c; } }
@@ -1080,13 +1115,16 @@ class MarkdownStreamer {
 
     this.root.querySelectorAll('a[href="#"]').forEach(a => {
       const key = a.dataset.refKey || a.textContent.trim().toLowerCase();
-      if (this.refDefs[key]) { a.href = this.refDefs[key]; delete a.dataset.refKey; }
+      const def = this.refDefs[key];
+      if (def) { a.href = def.url; if (def.title) a.title = def.title; delete a.dataset.refKey; }
     });
 
     this.root.querySelectorAll('a[data-implicit-ref]').forEach(a => {
       const key = a.dataset.implicitRef;
-      if (this.refDefs[key]) {
-        a.href = this.refDefs[key]; a.removeAttribute('data-implicit-ref');
+      const def = this.refDefs[key];
+      if (def) {
+        a.href = def.url; if (def.title) a.title = def.title;
+        a.removeAttribute('data-implicit-ref');
       } else {
         const parent = a.parentNode;
         if (parent) {
