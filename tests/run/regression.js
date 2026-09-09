@@ -318,6 +318,31 @@ test('a closing backtick run at the very end of a line still closes the span', (
   assert.match(render('`` foo ` bar ``\nmore'), /<code>foo ` bar<\/code>/);
 });
 
+// ── Inline raw HTML (any tag, not a fixed whitelist) ───────────────────────
+test('an arbitrary (non-whitelisted) inline tag passes through with attributes', () => {
+  const html = render('Foo <responsive-image src="foo.jpg" />');
+  assert.match(html, /<responsive-image src="foo\.jpg">/);
+});
+
+test('a closing tag pops the matching open ancestor by name', () => {
+  const html = render('<kbd>x</kbd>');
+  assert.match(html, /<kbd>x<\/kbd>/);
+});
+
+test('an entity inside a raw tag attribute value is not intercepted as text', () => {
+  // Regression: the entity-decode check ran before the tag-buffer check,
+  // so "&" inside an open "<...>" was diverted to entity processing
+  // instead of being captured as part of the tag.
+  assert.match(render('foo <a href="&ouml;">'), /<a href="ö">/);
+});
+
+test('an unresolved "<tag" left open at end of line falls back to literal text, not silent loss', () => {
+  // Regression: resetLine() discarded a still-buffering autolinkBuf with
+  // no fallback, silently dropping content like "<a href=\"hi'>".
+  const html = render("<a href=\"hi'> more text");
+  assert.doesNotMatch(html, /^<p>\s*<\/p>$/, 'content must not vanish entirely');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

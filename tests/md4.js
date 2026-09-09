@@ -16,6 +16,7 @@ const ENTITY_MAP = {
   '&frac12;':'½','&frac14;':'¼','&frac34;':'¾','&hearts;':'♥','&spades;':'♠',
 };
 const BLOCK_TAGS = new Set(['details','summary','figure','figcaption','aside','section','article','div','p','table','thead','tbody','tr','td','th','ul','ol','li','dl','dt','dd','form','nav','header','footer','main','blockquote','pre','hr','h1','h2','h3','h4','h5','h6']);
+const VOID_TAGS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
 
 // ─── DomStack ─────────────────────────────────────────────────────────────────
 class DomStack {
@@ -71,7 +72,7 @@ class MarkdownStreamer {
     this.inlinePending = ''; this.textNode = null;
     this.lastChar = undefined; this.pendingDelimBefore = undefined;
     this.escapeNext = false; this.entityBuf = null;
-    this.autolinkBuf = null;
+    this.autolinkBuf = null; this.autolinkQuote = null;
     this.bareUrlBuf = null; this.bareUrlOpen = false; this.prevCharWs = true;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.refDefs = {};
@@ -260,6 +261,14 @@ class MarkdownStreamer {
       this._resetBareUrl();
     }
 
+    // An unresolved "<...tag attempt" left open at end-of-line (e.g. an
+    // unmatched quote inside it) would otherwise be silently discarded by
+    // resetLine() below — fall back to literal text instead of losing it.
+    if (this.autolinkBuf !== null) {
+      this.appendToTextNode('<' + this.autolinkBuf);
+      this.autolinkBuf = null; this.autolinkQuote = null;
+    }
+
     // A counted run of closing backticks (see the inline-code branch of
     // onInlineChar) only gets resolved once a following character arrives
     // to confirm the run's true length — a run sitting right at end-of-line
@@ -306,7 +315,7 @@ class MarkdownStreamer {
     this.inCell = false; this.tablePipePending = false; this.trailingSpaces = 0;
     this.lineStart = true; this.prevCharWs = true; this.bareUrlBuf = null;
     this.lastChar = undefined;
-    this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null;
+    this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null; this.autolinkQuote = null;
     this.taskCheckBuf = null; this.taskCheckDone = false;
     this.codeCloseRun = 0;
   }
@@ -579,6 +588,36 @@ class MarkdownStreamer {
 
     if (this.linkState !== null) { this.onLinkChar(ch); return; }
 
+    // Autolink / inline HTML — CommonMark allows ANY HTML-tag-like
+    // construct (not a fixed whitelist), so the whole "<...>" span is
+    // buffered and classified once its closing '>' is found: a closing
+    // tag (pop the matching ancestor by name), an opening/self-closing
+    // tag (create it with its real attributes, via the browser's own
+    // parser so quoting/escaping is handled correctly), an autolink
+    // (scheme: URL or email), an HTML comment, or — if none of those —
+    // literal text. Checked before backslash/entity handling: raw HTML is
+    // literal, so "&" and "\" inside an open tag must be buffered as-is,
+    // not treated as an entity/escape.
+    if (this.autolinkBuf !== null) {
+      if (this.autolinkBuf === '!-' && ch === '-') { this.autolinkBuf = '!--'; return; }
+      if (this.autolinkBuf.startsWith('!--')) {
+        this.autolinkBuf += ch;
+        if (this.autolinkBuf.endsWith('-->')) { this.autolinkBuf = null; this.prevCharWs = false; }
+        return;
+      }
+      if (this.autolinkQuote) {
+        this.autolinkBuf += ch;
+        if (ch === this.autolinkQuote) this.autolinkQuote = null;
+        return;
+      }
+      if (ch === '"' || ch === "'") { this.autolinkQuote = ch; this.autolinkBuf += ch; return; }
+      if (ch === '>') { this._resolveAutolinkBuf(); return; }
+      if (ch === '<') { this.appendToTextNode('<' + this.autolinkBuf); this.autolinkBuf = ''; return; }
+      this.autolinkBuf += ch;
+      if (this.autolinkBuf.length > 2000) { this.appendToTextNode('<' + this.autolinkBuf); this.autolinkBuf = null; }
+      return;
+    }
+
     // Backslash escape
     if (this.escapeNext) { this.escapeNext = false; this.appendToTextNode(ch); this.prevCharWs = false; return; }
     if (ch === '\\') { this.escapeNext = true; return; }
@@ -592,44 +631,7 @@ class MarkdownStreamer {
     }
     if (ch === '&') { this.entityBuf = '&'; return; }
 
-    // Autolink / inline HTML
-    if (this.autolinkBuf !== null) {
-      if (this.autolinkBuf === '!-' && ch === '-') { this.autolinkBuf = '!--'; return; }
-      if (this.autolinkBuf.startsWith('!--')) {
-        this.autolinkBuf += ch;
-        if (this.autolinkBuf.endsWith('-->')) { this.autolinkBuf = null; this.prevCharWs = false; }
-        return;
-      }
-      if (ch === '>') {
-        const buf = this.autolinkBuf;
-        if (buf.startsWith('/') && /^\/\w+$/.test(buf)) {
-          const el = this.dom.find(buf.slice(1).toUpperCase());
-          if (el) this._pop(el);
-          this.textNode = null; this.autolinkBuf = null; this.prevCharWs = false; return;
-        }
-        const tagMatch = buf.match(/^(\w+)(\s|$)/);
-        const knownInline = ['KBD','SPAN','SUP','SUB','ABBR','CITE','CODE','B','I','U','S','MARK','SMALL','DEL','INS','Q','VAR'];
-        if (tagMatch && knownInline.includes(tagMatch[1].toUpperCase())) {
-          this.dom.push(tagMatch[1]); this.textNode = null;
-          this.autolinkBuf = null; this.prevCharWs = false; return;
-        }
-        if (buf.includes('://') || buf.includes('@')) {
-          const a = document.createElement('a');
-          a.href = buf.includes('@') && !buf.startsWith('http') ? 'mailto:' + buf : buf;
-          this.initAnchor(a); a.appendChild(document.createTextNode(buf));
-          this.dom.current.appendChild(a); this.textNode = null;
-          this.autolinkBuf = null; this.prevCharWs = false; return;
-        }
-        this.appendToTextNode('<' + buf + '>');
-        this.autolinkBuf = null; this.prevCharWs = false; return;
-      }
-      if (ch === ' ' || ch === '<') {
-        this.appendToTextNode('<' + this.autolinkBuf); this.autolinkBuf = null;
-        if (ch === '<') this.autolinkBuf = ''; return;
-      }
-      this.autolinkBuf += ch; return;
-    }
-    if (ch === '<') { this.autolinkBuf = ''; return; }
+    if (ch === '<') { this.autolinkBuf = ''; this.autolinkQuote = null; return; }
 
     // Bare URL
     if (this.bareUrlOpen) {
@@ -705,6 +707,50 @@ class MarkdownStreamer {
     }
     this.dom.pop();
     this.textNode = null;
+  }
+
+  // Classifies and applies a buffered "<...>" span once its closing '>' is
+  // found (called from onInlineChar; see the comment there).
+  _resolveAutolinkBuf() {
+    const buf = this.autolinkBuf;
+    this.autolinkBuf = null; this.autolinkQuote = null;
+
+    const closeMatch = buf.match(/^\/([a-zA-Z][a-zA-Z0-9-]*)\s*$/);
+    if (closeMatch) {
+      const el = this.dom.find(closeMatch[1].toUpperCase());
+      if (el) { this._pop(el); this.textNode = null; }
+      else this.appendToTextNode('<' + buf + '>'); // no open ancestor to close — passthrough, don't lose it
+      this.prevCharWs = false; return;
+    }
+
+    const openMatch = buf.match(/^([a-zA-Z][a-zA-Z0-9-]*)(\s[\s\S]*)?\/?$/);
+    if (openMatch) {
+      const tagName = openMatch[1];
+      const selfClosing = /\/\s*$/.test(buf) || VOID_TAGS.has(tagName.toLowerCase());
+      const body = selfClosing ? buf.replace(/\/\s*$/, '') : buf;
+      try {
+        const doc = new DOMParser().parseFromString('<' + body + '></' + tagName + '>', 'text/html');
+        const src = doc.body.querySelector(tagName);
+        const el = document.createElement(tagName);
+        if (src) for (const attr of src.attributes) el.setAttribute(attr.name, attr.value);
+        this.dom.current.appendChild(el);
+        this.textNode = null;
+        if (!selfClosing) this.dom.current = el;
+        this.prevCharWs = false; return;
+      } catch (e) { /* fall through to literal below */ }
+    }
+
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]*$/.test(buf) || /^[^\s<>@]+@[^\s<>@]+$/.test(buf)) {
+      const a = document.createElement('a');
+      const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(buf);
+      a.href = buf.includes('@') && !hasScheme ? 'mailto:' + buf : buf;
+      this.initAnchor(a); a.appendChild(document.createTextNode(buf));
+      this.dom.current.appendChild(a); this.textNode = null;
+      this.prevCharWs = false; return;
+    }
+
+    this.appendToTextNode('<' + buf + '>');
+    this.prevCharWs = false;
   }
 
   closeBareUrl() {
@@ -1218,6 +1264,10 @@ class MarkdownStreamer {
       if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
       else this.appendToTextNode('`'.repeat(this.codeCloseRun));
       this.codeCloseRun = 0;
+    }
+    if (this.autolinkBuf !== null) {
+      this.appendToTextNode('<' + this.autolinkBuf);
+      this.autolinkBuf = null; this.autolinkQuote = null;
     }
 
     this.flushDefPending();

@@ -37,6 +37,7 @@ function normalize(html) {
     // fixable difference, and attribute order on a real element is
     // insertion-order, not alphabetical, so tolerate that too for <img>.
     .replace(/<br\s*\/?>/g, '<br>')
+    .replace(/<hr\s*\/?>/g, '<hr>')
     .replace(/<img([^>]*?)\s*\/>/g, '<img$1>')
     .replace(/<img ([^>]*)>/g, (_, attrs) => {
       const tokens = attrs.trim().match(/[\w-]+(?:="[^"]*"|='[^']*')?/g) || [];
