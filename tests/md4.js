@@ -216,7 +216,7 @@ class MarkdownStreamer {
       } else if (/^- (- ?)+$/.test(p.trimEnd()) && (p.match(/-/g)||[]).length >= 3) {
         this.makeHr();
       } else if (p[0] === '-' && /^- /.test(p)) {
-        this.openUlDecided(p.slice(2));
+        this.openUlDecided(p.slice(2), '-');
       } else if (p[0] === '[') {
         const tag = this.dom.currentTag();
         if (tag === 'P' || tag === 'LI' || tag === 'DD') {
@@ -349,7 +349,7 @@ class MarkdownStreamer {
         // Unordered list / thematic break
         if (p.length === 1) return;
         if (p.length === 2) {
-          if (p[1] === ' ') return this.openUlDecided('');
+          if (p[1] === ' ') return this.openUlDecided('', '*');
           if (p[1] !== '*') return this._blockDefault(ch);
           return;
         }
@@ -370,7 +370,7 @@ class MarkdownStreamer {
         }
         if (p.length === 3) {
           if (p === '- -' || p === '- *') return;
-          if (p[1] === ' ' && p[2] !== '-' && p[2] !== ' ') return this.openUlDecided(p[2]);
+          if (p[1] === ' ' && p[2] !== '-' && p[2] !== ' ') return this.openUlDecided(p[2], '-');
           if (p[1] === ' ' && p[2] === ' ') return;
           return (this.lastBlockEl?.tagName === 'P')
             ? this.startSetextWatch('-', p, false)
@@ -379,15 +379,15 @@ class MarkdownStreamer {
         if (p.length === 4) {
           if (p === '- - ') return;
           if (p.startsWith('- -')) return this.startHrWatch('-', 2, false);
-          return this.openUlDecided(p.slice(2));
+          return this.openUlDecided(p.slice(2), '-');
         }
         if (/^(- )+$/.test(p) || /^(- )+-?$/.test(p)) return;
-        if (/^- /.test(p)) return this.openUlDecided(p.slice(2));
+        if (/^- /.test(p)) return this.openUlDecided(p.slice(2), '-');
         return this.startHrWatch('-', (p.match(/-/g)||[]).length, false);
 
       case '+':
         if (p.length === 1) return;
-        if (p[1] === ' ') { this.openUlDecided(p.slice(2)); return; }
+        if (p[1] === ' ') { this.openUlDecided(p.slice(2), '+'); return; }
         this._blockDefault(ch); return;
 
       case '_':
@@ -467,7 +467,7 @@ class MarkdownStreamer {
           if (i === p.length) return;
           if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this._blockDefault(ch); return; }
           if (i + 1 === p.length) return;
-          if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent); this._bd(); return; }
+          if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent, p[i], parseInt(p.slice(0, i), 10)); this._bd(); return; }
           this._blockDefault(ch); return;
         }
         this._blockDefault(ch);
@@ -909,7 +909,7 @@ class MarkdownStreamer {
   flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref' && !(d.key in this.refDefs)) this.refDefs[d.key] = this._parseUrlBuf(d.value); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
-  openUlDecided(s)      { this.openListItem('ul', this.lineIndent); this._bd(); for (const c of s) { this.onInlineChar(c); this.lastChar = c; } }
+  openUlDecided(s, marker) { this.openListItem('ul', this.lineIndent, marker); this._bd(); for (const c of s) { this.onInlineChar(c); this.lastChar = c; } }
 
   // ── Entity decoder ─────────────────────────────────────────────────────────
   decodeEntity(raw) {
@@ -1014,17 +1014,20 @@ class MarkdownStreamer {
     const dd = this.dom.push('dd'); this.lastBlockEl = dd; this.textNode = null;
   }
 
-  openListItem(type, indent) {
+  // `marker`: the bullet char ('-','+','*') or ordered delimiter ('.',')')
+  // — a change in marker, not just list type, starts a new list per
+  // CommonMark (e.g. "- a\n+ b" is two separate <ul>s, not one).
+  openListItem(type, indent, marker, startNum) {
     this._popMarkers();
     this.textNode = null;
     if (this.listStack.length === 0) {
       const tag = this.dom.currentTag();
       if (!['UL','OL','LI'].includes(tag)) this.closeBlock();
-      this.pushNewList(type, indent);
+      this.pushNewList(type, indent, marker, startNum);
     } else {
       const top = this.listStack[this.listStack.length - 1];
       if (indent > top.indent) {
-        this.pushNewList(type, indent);
+        this.pushNewList(type, indent, marker, startNum);
       } else {
         if (indent < top.indent) {
           while (this.listStack.length > 1 && this.listStack[this.listStack.length - 1].indent > indent) {
@@ -1035,9 +1038,9 @@ class MarkdownStreamer {
         }
         if (this.dom.currentTag() === 'LI') this.dom.pop();
         const now = this.listStack[this.listStack.length - 1];
-        if (now.type !== type) {
+        if (now.type !== type || now.marker !== marker) {
           if (['UL','OL'].includes(this.dom.currentTag())) this.dom.pop();
-          this.listStack.pop(); this.pushNewList(type, indent);
+          this.listStack.pop(); this.pushNewList(type, indent, marker, startNum);
         }
       }
     }
@@ -1045,9 +1048,10 @@ class MarkdownStreamer {
     this.taskCheckBuf = ''; this.taskCheckDone = false;
   }
 
-  pushNewList(type, indent) {
+  pushNewList(type, indent, marker, startNum) {
     const list = this.dom.push(type);
-    this.listStack.push({ el: list, type, indent });
+    if (type === 'ol' && startNum !== undefined && startNum !== 1) list.setAttribute('start', String(startNum));
+    this.listStack.push({ el: list, type, indent, marker });
   }
 
   // ── Setext ─────────────────────────────────────────────────────────────────

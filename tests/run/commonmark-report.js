@@ -21,12 +21,16 @@ const cases = require('./commonmark-spec.json');
 //  - the spec pretty-prints block tags on their own line and represents a
 //    soft line break as a literal newline; md4.js emits compact HTML and
 //    represents a soft line break as a space — both render identically in
-//    a browser, so all whitespace runs are collapsed to a single space.
+//    a browser. Whitespace runs are collapsed to a single space (so a
+//    soft-break space and a literal newline compare equal), and any
+//    whitespace that ends up directly between '>' and '<' is then dropped
+//    entirely (pure block-formatting indentation, not text content).
 function normalize(html) {
   return html
     .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
     .replace(/ class="blk"/g, '')
     .replace(/\s+/g, ' ')
+    .replace(/>\s+</g, '><')
     .trim();
 }
 

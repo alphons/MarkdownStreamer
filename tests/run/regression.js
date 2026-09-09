@@ -225,6 +225,26 @@ test('an angle-bracket link destination strips the brackets and encodes spaces',
   assert.match(render('[link](<>)'), /href=""/);
 });
 
+// ── List marker changes and ordered-list start ─────────────────────────────
+test('a bullet marker change starts a new list', () => {
+  const html = render('- foo\n- bar\n+ baz');
+  assert.strictEqual(countTag(html, 'ul'), 2, '"-" then "+" must be two separate <ul>s');
+  assert.match(html, /<\/ul><ul>/);
+});
+
+test('an ordered-list delimiter change (. vs )) starts a new list', () => {
+  const html = render('1. foo\n2. bar\n3) baz');
+  assert.strictEqual(countTag(html, 'ol'), 2);
+});
+
+test('an ordered list starting above 1 gets a start= attribute', () => {
+  assert.match(render('3) baz'), /<ol start="3">/);
+});
+
+test('an ordered list starting at 1 has no start= attribute', () => {
+  assert.doesNotMatch(render('1. foo\n2. bar'), /start=/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
