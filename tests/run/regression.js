@@ -430,6 +430,39 @@ test('a thematic-break-shaped line indented 4+ inside an open paragraph stays co
   assert.match(html, /<p>Foo \*\*\*<\/p>/);
 });
 
+// ── Entity and numeric character references ────────────────────────────────
+test('a long named entity is not truncated by the buffer length cap', () => {
+  // Regression: the entity buffer bailed out (flushed as literal) after 12
+  // chars, but many valid HTML5 entity names are longer, e.g. "&HilbertSpace;".
+  assert.match(render('&HilbertSpace; &ClockwiseContourIntegral;'), /ℋ ∲/);
+});
+
+test('an uppercase hex numeric reference ("&#X.." not just "&#x..") is recognized', () => {
+  assert.match(render('&#X22;'), /<p>"<\/p>/);
+});
+
+test('&#0; becomes the replacement character, not empty', () => {
+  assert.match(render('&#0;'), /�/);
+});
+
+test('a numeric reference with too many digits is not valid (stays literal)', () => {
+  // CommonMark caps decimal refs at 7 digits, hex at 6 — longer isn't an
+  // "invalid code point" (-> replacement char), it isn't a reference at all.
+  assert.match(render('&#87654321;'), /&amp;#87654321;/);
+});
+
+test('an unterminated entity (no trailing ";") falls back to literal text, not silent loss', () => {
+  const html = render('&copy');
+  assert.doesNotMatch(html, /^<p>\s*<\/p>$/);
+  assert.match(html, /&amp;copy/);
+});
+
+test('entities in a link URL/title are decoded, and the URL is percent-encoded', () => {
+  const html = render('[foo](/f&ouml;&ouml; "f&ouml;&ouml;")');
+  assert.match(html, /href="\/f%C3%B6%C3%B6"/);
+  assert.match(html, /title="föö"/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
