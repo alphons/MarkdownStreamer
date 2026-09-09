@@ -15,7 +15,7 @@ const ENTITY_MAP = {
   '&times;':'×','&divide;':'÷','&plusmn;':'±','&deg;':'°',
   '&frac12;':'½','&frac14;':'¼','&frac34;':'¾','&hearts;':'♥','&spades;':'♠',
 };
-const BLOCK_TAGS = new Set(['details','summary','figure','figcaption','aside','section','article','div','table','thead','tbody','tr','td','th','ul','ol','li','dl','dt','dd','form','nav','header','footer','main','blockquote','pre','hr','h1','h2','h3','h4','h5','h6']);
+const BLOCK_TAGS = new Set(['details','summary','figure','figcaption','aside','section','article','div','p','table','thead','tbody','tr','td','th','ul','ol','li','dl','dt','dd','form','nav','header','footer','main','blockquote','pre','hr','h1','h2','h3','h4','h5','h6']);
 
 // ─── DomStack ─────────────────────────────────────────────────────────────────
 class DomStack {
