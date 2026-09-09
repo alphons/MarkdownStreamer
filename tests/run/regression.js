@@ -270,6 +270,28 @@ test('a hard break at the very end of the document (nothing follows) is not a <b
   assert.match(render('foo\\\n'), /<p>foo\\<\/p>/);
 });
 
+// ── Reference-style images ──────────────────────────────────────────────────
+test('an explicit reference-style image resolves against its definition', () => {
+  assert.match(render('![foo][bar]\n\n[bar]: /url'), /<img[^>]*src="\/url"[^>]*alt="foo"/);
+});
+
+test('a collapsed reference-style image (![alt][]) resolves against its definition', () => {
+  const html = render('![foo][]\n\n[foo]: /url "title"');
+  assert.match(html, /<img[^>]*src="\/url"/);
+  assert.match(html, /title="title"/);
+});
+
+test('a shortcut reference-style image (![alt]) resolves against its definition', () => {
+  // Regression: this exact form, ending right at end-of-line, never reached
+  // onLinkChar's handling (newlines bypass it) and silently lost the image.
+  assert.match(render('![Foo]\n\n[foo]: /url "title"'), /<img[^>]*src="\/url"/);
+});
+
+test('a reference-style image with no matching definition falls back to literal text', () => {
+  assert.match(render('![foo][nope]'), /!\[foo\]\[nope\]/);
+  assert.doesNotMatch(render('![foo][nope]'), /<img/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

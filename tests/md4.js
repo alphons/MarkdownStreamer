@@ -264,6 +264,14 @@ class MarkdownStreamer {
       const a = this.dom.find('A');
       if (a && !a.href) { a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a); }
       this._resetLinkUrl();
+    } else if (this.linkState === 'img_expect_paren' || this.linkState === 'img_ref_id') {
+      // A shortcut ![alt] or collapsed/explicit ![alt][ref] ending exactly
+      // at end-of-line never reaches onLinkChar's own handling for it
+      // (newlines bypass onLinkChar entirely) — resolve it here the same way.
+      const isShortcut = this.linkState === 'img_expect_paren';
+      const refKey = (isShortcut ? this.linkBuf : (this.urlBuf.trim() || this.linkBuf.trim())).trim().toLowerCase();
+      this._pushRefImage(refKey, isShortcut);
+      this._resetLinkUrl();
     } else if (this.linkState !== null) {
       this.abortLinkElement(null);
     }
@@ -691,7 +699,20 @@ class MarkdownStreamer {
 
       case 'img_expect_paren':
         if (ch === '(') { this.linkState = 'img_url'; this.urlBuf = ''; this._resetUrlParse(); }
-        else { this.appendToTextNode('![' + this.linkBuf + ']' + ch); this.linkState = null; this.linkIsImage = false; this.linkBuf = ''; }
+        else if (ch === '[') { this.linkState = 'img_ref_id'; this.urlBuf = ''; }
+        else {
+          // Shortcut reference form: ![alt] with no following (...)/[...] —
+          // resolved against refDefs at finalize() (defs may come later).
+          this._pushRefImage(this.linkBuf.trim().toLowerCase(), true);
+          if (ch !== '\n') this.onInlineChar(ch);
+        }
+        return;
+
+      case 'img_ref_id':
+        if (ch === ']') {
+          const refKey = (this.urlBuf.trim() || this.linkBuf.trim()).toLowerCase();
+          this._pushRefImage(refKey, false);
+        } else { this.urlBuf += ch; }
         return;
 
       case 'img_url': {
@@ -773,6 +794,23 @@ class MarkdownStreamer {
         return;
       }
     }
+  }
+
+  // Creates a placeholder <img> for a reference-style image (explicit
+  // ![alt][ref], collapsed ![alt][], or shortcut ![alt]) whose definition
+  // may not be known yet — resolved (or reverted to literal text) once all
+  // reference definitions are known, in finalize()'s img[data-ref-key] pass.
+  _pushRefImage(refKey, isShortcut) {
+    const insideLink = !!this.dom.find('A');
+    const img = document.createElement('img');
+    img.src = ''; // set first so later resolving it in finalize() keeps src before alt in attribute order
+    img.alt = this.linkBuf;
+    img.dataset.refKey = refKey;
+    if (isShortcut) img.dataset.refShortcut = '1';
+    if (!insideLink) img.className = 'blk';
+    this.dom.current.appendChild(img);
+    this.textNode = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
+    this.linkState = insideLink ? 'label_open' : null;
   }
 
   abortLinkElement(extraCh) {
@@ -1163,6 +1201,19 @@ class MarkdownStreamer {
           parent.insertBefore(document.createTextNode('[' + a.textContent + ']'), a);
           parent.removeChild(a);
         }
+      }
+    });
+
+    this.root.querySelectorAll('img[data-ref-key]').forEach(img => {
+      const key = img.dataset.refKey;
+      const def = this.refDefs[key];
+      if (def) {
+        img.src = def.url; if (def.title) img.title = def.title;
+        img.removeAttribute('data-ref-key'); img.removeAttribute('data-ref-shortcut');
+      } else {
+        const literal = img.dataset.refShortcut ? `![${img.alt}]` : `![${img.alt}][${key}]`;
+        const parent = img.parentNode;
+        if (parent) parent.replaceChild(document.createTextNode(literal), img);
       }
     });
 

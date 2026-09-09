@@ -30,8 +30,15 @@ function normalize(html) {
     .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
     .replace(/ class="blk"/g, '')
     // void-element self-closing slash: a real DOM/innerHTML can never
-    // produce "<br />", only "<br>" — this is not a fixable difference.
+    // produce "<br />" or "<img ... />", only "<br>"/"<img ...>" — not a
+    // fixable difference, and attribute order on a real element is
+    // insertion-order, not alphabetical, so tolerate that too for <img>.
     .replace(/<br\s*\/?>/g, '<br>')
+    .replace(/<img([^>]*?)\s*\/>/g, '<img$1>')
+    .replace(/<img ([^>]*)>/g, (_, attrs) => {
+      const tokens = attrs.trim().match(/[\w-]+(?:="[^"]*"|='[^']*')?/g) || [];
+      return '<img ' + tokens.sort().join(' ') + '>';
+    })
     .replace(/\s+/g, ' ')
     .replace(/>\s+</g, '><')
     .trim();
