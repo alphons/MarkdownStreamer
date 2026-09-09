@@ -164,6 +164,42 @@ test('async streaming renders the same as sync and terminates', async () => {
   assert.strictEqual(asyncHtml, syncHtml);
 });
 
+// ── Emphasis flanking rules (CommonMark 6.2) ───────────────────────────────
+test('emphasis with space right after the opening marker stays literal', () => {
+  assert.match(render('a * foo bar*'), /<p>a \* foo bar\*<\/p>/);
+});
+
+test('a single "*" surrounded by spaces on both sides stays literal', () => {
+  // "* a *" alone is ambiguous with a bullet-list marker, so use a
+  // mid-sentence position to isolate the emphasis-flanking behavior.
+  const html = render('x * a * y');
+  assert.doesNotMatch(html, /<em>/);
+  assert.match(html, /\* a \*/);
+});
+
+test('"_" cannot open/close intraword emphasis (only "*" can)', () => {
+  assert.match(render('foo_bar_'), /<p>foo_bar_<\/p>/);
+  assert.doesNotMatch(render('foo_bar_'), /<em>/);
+});
+
+test('"*" CAN open/close intraword emphasis, unlike "_"', () => {
+  assert.match(render('foo*bar*'), /foo<em>bar<\/em>/);
+});
+
+test('nested strong-in-em still resolves correctly inside a link label', () => {
+  // Regression: feedPendingAsInline()/openUlDecided()/blockquote inline-feed
+  // did not update lastChar, so flanking checks for text reached only via
+  // those paths (e.g. a link label, since decideBlock's own lookahead buffers
+  // the whole label before dispatching) always saw lastChar=undefined.
+  const html = render('[link *foo **bar** `#`*](/uri)');
+  assert.match(html, /link <em>foo <strong>bar<\/strong> <code>#<\/code><\/em>/);
+});
+
+test('emphasis flanking also works for list-item and blockquote inline text', () => {
+  assert.match(render('- *foo* bar'), /<em>foo<\/em> bar/);
+  assert.match(render('> *foo* bar'), /<em>foo<\/em> bar/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

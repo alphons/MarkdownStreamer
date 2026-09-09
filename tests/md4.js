@@ -69,6 +69,7 @@ class MarkdownStreamer {
     this.pending = ''; this.lastBlockEl = null; this.lineStart = true;
     this.listStack = [];
     this.inlinePending = ''; this.textNode = null;
+    this.lastChar = undefined; this.pendingDelimBefore = undefined;
     this.escapeNext = false; this.entityBuf = null;
     this.autolinkBuf = null;
     this.bareUrlBuf = null; this.bareUrlOpen = false; this.prevCharWs = true;
@@ -218,7 +219,7 @@ class MarkdownStreamer {
       } else if (p[0] === '[') {
         const tag = this.dom.currentTag();
         if (tag === 'P' || tag === 'LI' || tag === 'DD') {
-          if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); }
+          if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
           this.feedPendingAsInline(); this.blockDecided = true;
         } else this.fallbackToParagraph();
       }
@@ -275,6 +276,7 @@ class MarkdownStreamer {
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.inCell = false; this.tablePipePending = false; this.trailingSpaces = 0;
     this.lineStart = true; this.prevCharWs = true; this.bareUrlBuf = null;
+    this.lastChar = undefined;
     this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null;
     this.taskCheckBuf = null; this.taskCheckDone = false;
   }
@@ -284,7 +286,7 @@ class MarkdownStreamer {
     if (this.defPending) { this.defPending.value += ch; return; }
     const tag = this.dom.currentTag();
     if (tag === 'P' || tag === 'LI' || tag === 'DD') {
-      if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); }
+      if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
       this.feedPendingAsInline(); this.blockDecided = true; return;
     }
     this.fallbackToParagraph();
@@ -310,7 +312,7 @@ class MarkdownStreamer {
         const { level, i } = this._bqLevel(p);
         if (i === p.length) return;
         this.ensureBlockquote(level); this.openParagraph(); this._bd();
-        for (const c of p.slice(i)) this.onInlineChar(c);
+        for (const c of p.slice(i)) { this.onInlineChar(c); this.lastChar = c; }
         return;
       }
 
@@ -498,6 +500,7 @@ class MarkdownStreamer {
     }
     if (this.inTable && this.tablePipePending) { this.tablePipePending = false; this.openTableCell(); }
     this.onInlineChar(ch);
+    this.lastChar = ch;
   }
 
   // ── Inline state machine ───────────────────────────────────────────────────
@@ -632,7 +635,8 @@ class MarkdownStreamer {
     }
 
     if (this.isMarkerChar(ch)) {
-      if (this.inlinePending && ch !== this.inlinePending[0]) this.resolveInlinePending(null);
+      if (this.inlinePending && ch !== this.inlinePending[0]) this.resolveInlinePending(null, ch);
+      if (!this.inlinePending) this.pendingDelimBefore = this.lastChar;
       this.inlinePending += ch;
       this.prevCharWs = false; return;
     }
@@ -773,33 +777,65 @@ class MarkdownStreamer {
     return { url: m ? m[1] : raw, title: m ? m[2] : null };
   }
 
+  // ── Delimiter flanking (CommonMark 6.2) ────────────────────────────────────
+  _isPunct(ch) { return ch !== undefined && ch !== null && /[!-/:-@[-`{-~]/.test(ch); }
+  _isWsBoundary(ch) { return ch === undefined || ch === null || /\s/.test(ch); }
+
+  // Returns whether a delimiter run bounded by `before`/`after` can open
+  // and/or close emphasis, per the CommonMark left/right-flanking rules.
+  // `_` additionally forbids intraword emphasis; `*` has no such restriction.
+  _canOpenClose(baseChar, before, after) {
+    const beforeWs = this._isWsBoundary(before), afterWs = this._isWsBoundary(after);
+    const beforePunct = this._isPunct(before), afterPunct = this._isPunct(after);
+    const left  = !afterWs && (!afterPunct || beforeWs || beforePunct);
+    const right = !beforeWs && (!beforePunct || afterWs || afterPunct);
+    if (baseChar === '_') {
+      return { canOpen: left && (!right || beforePunct), canClose: right && (!left || afterPunct) };
+    }
+    return { canOpen: left, canClose: right };
+  }
+
   // ── Resolve inline pending ─────────────────────────────────────────────────
-  resolveInlinePending(nextCh) {
+  // `nextCh`: character to literally append after resolving (null = caller
+  // handles it itself). `flankChar` (defaults to nextCh): the character to
+  // use as "what follows" for flanking — distinct from nextCh when a new
+  // delimiter run interrupts this one (that new char follows for flanking
+  // purposes, but must not itself be written as plain text here).
+  resolveInlinePending(nextCh, flankChar = nextCh) {
     const marker = this.inlinePending; this.inlinePending = '';
     if (marker) {
-      if (marker === '***') {
-        const closeEl = this.findInlineClose('***');
-        if (closeEl !== null) {
+      const baseChar = marker[0];
+      if (baseChar === '*' || baseChar === '_') {
+        const { canOpen, canClose } = this._canOpenClose(baseChar, this.pendingDelimBefore, flankChar);
+        const closeEl = canClose ? this.findInlineClose(marker) : null;
+        if (marker === '***') {
+          if (closeEl !== null) {
+            this._pop(closeEl); this.textNode = null;
+            if (this.dom.current._mdMarker === '***_em') { this.dom.pop(); this.textNode = null; }
+          } else if (canOpen) {
+            const strong = this.dom.push('strong'); strong._mdMarker = '***'; this.textNode = null;
+            const em = this.dom.push('em'); em._mdMarker = '***_em'; this.textNode = null;
+          } else {
+            this.writeText(marker);
+          }
+        } else if (closeEl !== null) {
           this._pop(closeEl); this.textNode = null;
-          if (this.dom.current._mdMarker === '***_em') { this.dom.pop(); this.textNode = null; }
+        } else if (canOpen) {
+          const tag = this.markerToTag(marker);
+          const el = this.dom.push(tag); el._mdMarker = marker; this.textNode = null;
         } else {
-          const strong = this.dom.push('strong'); strong._mdMarker = '***'; this.textNode = null;
-          const em = this.dom.push('em'); em._mdMarker = '***_em'; this.textNode = null;
+          this.writeText(marker);
         }
       } else {
+        // Non-emphasis markers (code, strikethrough, sup/sub, highlight):
+        // no flanking rules, just toggle open/close.
         const closeEl = this.findInlineClose(marker);
         if (closeEl !== null) {
           this._pop(closeEl); this.textNode = null;
         } else {
           const tag = this.markerToTag(marker);
           if (tag) {
-            if (tag === 'strong+em') {
-              const strong = this.dom.push('strong'); strong._mdMarker = marker;
-              const em = document.createElement('em'); em._mdMarker = '***_em';
-              strong.appendChild(em); this.dom.current = em; this.textNode = null;
-            } else {
-              const el = this.dom.push(tag); el._mdMarker = marker; this.textNode = null;
-            }
+            const el = this.dom.push(tag); el._mdMarker = marker; this.textNode = null;
           } else {
             this.writeText(marker);
           }
@@ -838,7 +874,7 @@ class MarkdownStreamer {
   flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref') this.refDefs[d.key] = d.value.trim(); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
-  openUlDecided(s)      { this.openListItem('ul', this.lineIndent); this._bd(); for (const c of s) this.onInlineChar(c); }
+  openUlDecided(s)      { this.openListItem('ul', this.lineIndent); this._bd(); for (const c of s) { this.onInlineChar(c); this.lastChar = c; } }
 
   // ── Entity decoder ─────────────────────────────────────────────────────────
   decodeEntity(raw) {
@@ -854,7 +890,7 @@ class MarkdownStreamer {
     this.textNode.data += str;
   }
   appendToTextNode(ch) { this.writeText(ch); }
-  feedPendingAsInline() { const s = this.pending; this.pending = ''; for (const ch of s) this.onInlineChar(ch); }
+  feedPendingAsInline() { const s = this.pending; this.pending = ''; for (const ch of s) { this.onInlineChar(ch); this.lastChar = ch; } }
 
   // ── Code fence ─────────────────────────────────────────────────────────────
   onCodeFenceNewline() {
