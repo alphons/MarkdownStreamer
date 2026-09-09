@@ -217,8 +217,10 @@ class MarkdownStreamer {
         this.openUlDecided(p.slice(2));
       } else if (p[0] === '[') {
         const tag = this.dom.currentTag();
-        if (tag === 'P' || tag === 'LI' || tag === 'DD') { this.feedPendingAsInline(); this.blockDecided = true; }
-        else this.fallbackToParagraph();
+        if (tag === 'P' || tag === 'LI' || tag === 'DD') {
+          if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); }
+          this.feedPendingAsInline(); this.blockDecided = true;
+        } else this.fallbackToParagraph();
       }
       this.pending = '';
     }
@@ -281,12 +283,14 @@ class MarkdownStreamer {
   _blockDefault(ch) {
     if (this.defPending) { this.defPending.value += ch; return; }
     const tag = this.dom.currentTag();
-    if (tag === 'P' || tag === 'LI' || tag === 'DD') { this.feedPendingAsInline(); this.blockDecided = true; return; }
+    if (tag === 'P' || tag === 'LI' || tag === 'DD') {
+      if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); }
+      this.feedPendingAsInline(); this.blockDecided = true; return;
+    }
     this.fallbackToParagraph();
   }
 
   decideBlock(ch) {
-    if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); }
     this.pending += ch;
     const p = this.pending;
 
