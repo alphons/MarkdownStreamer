@@ -514,6 +514,10 @@ class MarkdownStreamer {
 
   // ── Content chars ──────────────────────────────────────────────────────────
   onContentChar(ch) {
+    // Indented code blocks are literal — no emphasis, links, entities,
+    // escapes, etc. should be parsed inside them (same principle as the
+    // fenced-code path, which already writes raw via feedCodeFenceLine).
+    if (this.inIndentCode) { if (this.textNode) this.textNode.data += ch; return; }
     if (this.sepWatch && this.inTable) {
       this.sepBuf += ch;
       if (ch !== '-' && ch !== ':' && ch !== ' ' && ch !== '|') this.sepFailed = true;
@@ -618,8 +622,14 @@ class MarkdownStreamer {
       return;
     }
 
-    // Backslash escape
-    if (this.escapeNext) { this.escapeNext = false; this.appendToTextNode(ch); this.prevCharWs = false; return; }
+    // Backslash escape — only ASCII punctuation can be escaped; a backslash
+    // before anything else (a letter, digit, tab, non-ASCII char, ...) is
+    // itself literal, per CommonMark.
+    if (this.escapeNext) {
+      this.escapeNext = false;
+      this.appendToTextNode(this._isPunct(ch) ? ch : '\\' + ch);
+      this.prevCharWs = false; return;
+    }
     if (ch === '\\') { this.escapeNext = true; return; }
 
     // HTML entity

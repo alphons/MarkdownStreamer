@@ -343,6 +343,22 @@ test('an unresolved "<tag" left open at end of line falls back to literal text, 
   assert.doesNotMatch(html, /^<p>\s*<\/p>$/, 'content must not vanish entirely');
 });
 
+// ── Backslash escapes scoped to ASCII punctuation / literal in code ────────
+test('backslash only escapes ASCII punctuation; "\\A" stays literal', () => {
+  assert.match(render('\\A\\3'), /\\A\\3/);
+});
+
+test('backslash escape still works normally on punctuation', () => {
+  assert.match(render('\\*not emphasized\\*'), /\*not emphasized\*/);
+  assert.doesNotMatch(render('\\*not emphasized\\*'), /<em>/);
+});
+
+test('an indented code block is fully literal — no emphasis, links, entities, or escapes parsed', () => {
+  const html = render('    *foo* [bar](baz) &amp; \\[\\]');
+  assert.match(html, /<pre><code>\*foo\* \[bar\]\(baz\) [\s\S]*\\\[\\\]<\/code><\/pre>/);
+  assert.doesNotMatch(html, /<em>|<a /);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
