@@ -29,6 +29,9 @@ function normalize(html) {
   return html
     .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
     .replace(/ class="blk"/g, '')
+    // void-element self-closing slash: a real DOM/innerHTML can never
+    // produce "<br />", only "<br>" — this is not a fixable difference.
+    .replace(/<br\s*\/?>/g, '<br>')
     .replace(/\s+/g, ' ')
     .replace(/>\s+</g, '><')
     .trim();

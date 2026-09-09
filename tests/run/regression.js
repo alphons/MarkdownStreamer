@@ -245,6 +245,31 @@ test('an ordered list starting at 1 has no start= attribute', () => {
   assert.doesNotMatch(render('1. foo\n2. bar'), /start=/);
 });
 
+// ── Hard line breaks ────────────────────────────────────────────────────────
+test('a hard break (trailing 2+ spaces) inserts <br> with a following space', () => {
+  assert.match(render('foo  \nbaz'), /foo<br>\s?baz/);
+});
+
+test('leading whitespace on a continuation line no longer starts a code block', () => {
+  // Regression: 5+ leading spaces on a line continuing an open paragraph
+  // used to trigger indented-code-block detection; per CommonMark, lazy
+  // continuation lines never do, regardless of leading whitespace.
+  const html = render('foo  \n     bar');
+  assert.doesNotMatch(html, /<pre>/);
+  assert.match(html, /foo<br>\s?bar/);
+});
+
+test('a heading trims a trailing hard-break marker instead of adding <br>', () => {
+  assert.match(render('### foo  \nmore'), /<h3>foo<\/h3>/);
+  assert.doesNotMatch(render('### foo  \nmore'), /<br>/);
+  assert.match(render('### foo\\\nmore'), /<h3>foo\\<\/h3>/);
+});
+
+test('a hard break at the very end of the document (nothing follows) is not a <br>', () => {
+  assert.doesNotMatch(render('foo  \n'), /<br>/);
+  assert.match(render('foo\\\n'), /<p>foo\\<\/p>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

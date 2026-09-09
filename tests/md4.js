@@ -121,7 +121,7 @@ class MarkdownStreamer {
     if (!this.blockDecided) {
       if (ch === ' ' && this.linePos === this.lineIndent + 1) {
         this.lineIndent++;
-        if (this.lineIndent === 4 && this.dom.currentTag() !== 'LI') {
+        if (this.lineIndent === 4 && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
           if (!this.inIndentCode) {
             this.closeBlock();
             const pre = this.dom.push('pre');
@@ -235,12 +235,21 @@ class MarkdownStreamer {
       this.resetLine(); return;
     }
 
-    let hardBreak = false;
-    if ((this.trailingSpaces >= 2 || this.escapeNext) && this.blockDecided) {
+    // A hard break (trailing "  " or "\") only applies mid-paragraph/list-item
+    // /definition — not inside a single-line construct like a heading, where
+    // trailing spaces/backslash are just trimmed with no <br>.
+    const contTag = this.dom.currentTag();
+    const breakEligible = contTag === 'P' || contTag === 'LI' || contTag === 'DD';
+    if ((this.trailingSpaces >= 2 || this.escapeNext) && this.blockDecided && breakEligible) {
       if (this.textNode) this.textNode.data = this.textNode.data.replace(/ +$/, '');
-      this.dom.current.appendChild(document.createElement('br'));
+      const br = document.createElement('br');
+      br.dataset.hardbreak = this.escapeNext ? 'esc' : 'sp';
+      this.dom.current.appendChild(br);
       this.textNode = null;
-      hardBreak = true;
+    } else if (this.escapeNext && this.blockDecided) {
+      // Trailing "\" in a context where hard breaks don't apply (e.g. a
+      // heading, which is always a single line) stays a literal character.
+      this.appendToTextNode('\\');
     }
     this.escapeNext = false;
 
@@ -260,14 +269,14 @@ class MarkdownStreamer {
     }
 
     if (this.atxLevel && this.textNode)
-      this.textNode.data = this.textNode.data.replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '');
+      this.textNode.data = this.textNode.data.replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '').replace(/ +$/, '');
     this.atxLevel = 0;
     this.textNode = null;
 
     this._popMarkers();
     if (this.inFootnoteDef) { this.dom.toRoot(); this.inFootnoteDef = false; this.footnoteDefId = ''; }
     const tag = this.dom.currentTag();
-    this.needsJoinSpace = !hardBreak && (tag === 'P' || tag === 'LI' || tag === 'DD');
+    this.needsJoinSpace = tag === 'P' || tag === 'LI' || tag === 'DD';
     this.resetLine();
   }
 
@@ -1111,11 +1120,30 @@ class MarkdownStreamer {
   }
 
   // ── Finalize ───────────────────────────────────────────────────────────────
+  _isLastNode(el) {
+    let node = el;
+    while (node && node !== this.root) {
+      if (node.nextSibling) return false;
+      node = node.parentNode;
+    }
+    return true;
+  }
+
   finalize() {
     this.flushDefPending();
     this.flushInlinePending();
     if (this.bareUrlOpen) this.closeBareUrl();
     this.textNode = null;
+
+    // A hard break needs a following line to break *to* — one at the very
+    // end of the document, with nothing after it, was never really a break.
+    const hardBreaks = this.root.querySelectorAll('br[data-hardbreak]');
+    const trailingBr = hardBreaks[hardBreaks.length - 1];
+    if (trailingBr && this._isLastNode(trailingBr)) {
+      const wasEscape = trailingBr.dataset.hardbreak === 'esc';
+      trailingBr.replaceWith(wasEscape ? document.createTextNode('\\') : document.createTextNode(''));
+    }
+    hardBreaks.forEach(br => br.removeAttribute('data-hardbreak'));
 
     this.root.querySelectorAll('a[href="#"]').forEach(a => {
       const key = a.dataset.refKey || a.textContent.trim().toLowerCase();
