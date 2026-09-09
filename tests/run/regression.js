@@ -292,6 +292,32 @@ test('a reference-style image with no matching definition falls back to literal 
   assert.doesNotMatch(render('![foo][nope]'), /<img/);
 });
 
+// ── Code span backtick run-length matching (CommonMark 6.1) ────────────────
+test('a code span only closes on a backtick run of the same length', () => {
+  // "``" opened with 2 backticks; a single "`" inside must stay literal.
+  assert.match(render('`` foo ` bar ``'), /<code>foo ` bar<\/code>/);
+});
+
+test('a shorter/longer backtick run inside a code span is literal content', () => {
+  assert.match(render('``foo`bar``'), /<code>foo`bar<\/code>/);
+  assert.match(render('` `` `'), /<code>``<\/code>/);
+});
+
+test('single leading/trailing space in a code span is stripped, but not more than one', () => {
+  assert.match(render('`  ``  `'), /<code> `` <\/code>/);
+});
+
+test('a code span consisting only of spaces is not stripped', () => {
+  assert.match(render('` `'), /<code> <\/code>/);
+});
+
+test('a closing backtick run at the very end of a line still closes the span', () => {
+  // Regression: a closing run is only confirmed once a following char
+  // arrives (to rule out a longer run) — one sitting right at end-of-line
+  // never got that char and the span silently failed to close.
+  assert.match(render('`` foo ` bar ``\nmore'), /<code>foo ` bar<\/code>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

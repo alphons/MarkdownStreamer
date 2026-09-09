@@ -29,6 +29,9 @@ function normalize(html) {
   return html
     .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
     .replace(/ class="blk"/g, '')
+    // a live DOM's innerHTML always serializes a literal U+00A0 character as
+    // the "&nbsp;" entity; the spec's own JSON keeps it as a literal char.
+    .replace(/&nbsp;/g, ' ')
     // void-element self-closing slash: a real DOM/innerHTML can never
     // produce "<br />" or "<img ... />", only "<br>"/"<img ...>" — not a
     // fixable difference, and attribute order on a real element is

@@ -89,6 +89,7 @@ class MarkdownStreamer {
 
     this.sepWatch = false; this.sepFailed = false; this.sepRowEl = null; this.sepBuf = '';
     this.needsJoinSpace = false;
+    this.codeCloseRun = 0;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -259,6 +260,16 @@ class MarkdownStreamer {
       this._resetBareUrl();
     }
 
+    // A counted run of closing backticks (see the inline-code branch of
+    // onInlineChar) only gets resolved once a following character arrives
+    // to confirm the run's true length — a run sitting right at end-of-line
+    // never gets that confirming character, so resolve it here instead.
+    if (this.codeCloseRun && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
+      else this.appendToTextNode('`'.repeat(this.codeCloseRun));
+      this.codeCloseRun = 0;
+    }
+
     this.flushInlinePending();
     if (this.linkState === 'expect_paren') {
       const a = this.dom.find('A');
@@ -297,6 +308,7 @@ class MarkdownStreamer {
     this.lastChar = undefined;
     this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null;
     this.taskCheckBuf = null; this.taskCheckDone = false;
+    this.codeCloseRun = 0;
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
@@ -544,10 +556,24 @@ class MarkdownStreamer {
       // b.length===1 && b!=='[': fall through to normal inline
     }
 
-    // Inline code
-    if (this.dom.current._mdMarker === '`') {
-      if (ch === '`') { this.dom.pop(); this.textNode = null; }
-      else this.appendToTextNode(ch);
+    // Inline code — a code span closes only on a backtick run of the exact
+    // same length as the one that opened it (CommonMark 6.1); a run of any
+    // other length (including a lone backtick inside a `` fence) is literal
+    // content, not a close.
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      const fenceLen = this.dom.current._mdMarker.length;
+      if (ch === '`') { this.codeCloseRun = (this.codeCloseRun || 0) + 1; return; }
+      if (this.codeCloseRun) {
+        if (this.codeCloseRun === fenceLen) {
+          this._closeCodeSpan();
+          this.codeCloseRun = 0;
+          this.onInlineChar(ch);
+          return;
+        }
+        this.appendToTextNode('`'.repeat(this.codeCloseRun));
+        this.codeCloseRun = 0;
+      }
+      this.appendToTextNode(ch);
       return;
     }
 
@@ -665,6 +691,21 @@ class MarkdownStreamer {
   }
 
   isMarkerChar(ch) { return '`*_~^'.includes(ch); }
+
+  // CommonMark 6.1: if a code span's content begins *and* ends with a
+  // literal space, but isn't entirely spaces, strip exactly one from each
+  // end (lets code that itself starts/ends with a backtick be fenced).
+  _closeCodeSpan() {
+    const code = this.dom.current;
+    const text = code.firstChild;
+    if (text && text.nodeType === 3 && text.data.length >= 2
+        && text.data[0] === ' ' && text.data[text.data.length - 1] === ' '
+        && /[^ ]/.test(text.data)) {
+      text.data = text.data.slice(1, -1);
+    }
+    this.dom.pop();
+    this.textNode = null;
+  }
 
   closeBareUrl() {
     const a = this.dom.find('A');
@@ -928,7 +969,8 @@ class MarkdownStreamer {
   }
 
   markerToTag(marker) {
-    return {'**':'strong','*':'em','__':'u','_':'em','~~':'s','^':'sup','~':'sub','`':'code','==':'mark'}[marker] || null;
+    if (marker[0] === '`') return 'code'; // any-length backtick run opens a code span
+    return {'**':'strong','*':'em','__':'u','_':'em','~~':'s','^':'sup','~':'sub','==':'mark'}[marker] || null;
   }
 
   findInlineClose(marker) {
@@ -1168,6 +1210,16 @@ class MarkdownStreamer {
   }
 
   finalize() {
+    // Same as onNewline()'s handling: a counted closing-backtick run is only
+    // confirmed once a following character rules out a longer run — one
+    // right at the very end of the input (no trailing newline either) never
+    // gets that character otherwise.
+    if (this.codeCloseRun && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
+      else this.appendToTextNode('`'.repeat(this.codeCloseRun));
+      this.codeCloseRun = 0;
+    }
+
     this.flushDefPending();
     this.flushInlinePending();
     if (this.bareUrlOpen) this.closeBareUrl();
