@@ -99,7 +99,7 @@ class MarkdownStreamer {
   _popMarkers()      { while (this.dom.current._mdMarker) this.dom.pop(); }
   _resetLinkUrl()    { this.linkState = null; this.urlBuf = ''; this.textNode = null; this._resetUrlParse(); }
   _resetUrlParse()   { this.urlAngle = undefined; this.urlAngleValue = null; this.urlParenDepth = 0; this.urlEscapeNext = false; }
-  _resetSetext()     { this.setextWatch = false; this.setextBuf = ''; this.setextChar = ''; this.setextFailed = false; }
+  _resetSetext()     { this.setextWatch = false; this.setextBuf = ''; this.setextChar = ''; this.setextFailed = false; this.setextTrailing = false; }
   _resetHr()         { this.hrWatch = false; this.hrChar = ''; this.hrCount = 0; this.hrFailed = false; }
   _doneTaskCheck()   { this.taskCheckDone = true; this.taskCheckBuf = null; }
   _bqLevel(p)   {
@@ -408,16 +408,19 @@ class MarkdownStreamer {
         if (p.length === 1) return;
         if (p.length === 2) {
           if (p[1] === ' ') return;
-          if (this.lastBlockEl?.tagName === 'P') return this.startSetextWatch('-', p, p[1] !== '-');
+          if (this.lastBlockEl?.tagName === 'P') {
+            return this.lineIndent < 4 ? this.startSetextWatch('-', p, p[1] !== '-') : this._blockDefault(ch);
+          }
           return this.startHrWatch('-', 2, p[1] !== '-');
         }
         if (p.length === 3) {
           if (p === '- -' || p === '- *') return;
           if (p[1] === ' ' && p[2] !== '-' && p[2] !== ' ') return this.openUlDecided(p[2], '-');
           if (p[1] === ' ' && p[2] === ' ') return;
-          return (this.lastBlockEl?.tagName === 'P')
-            ? this.startSetextWatch('-', p, false)
-            : this.startHrWatch('-', p.split('-').length - 1, false);
+          if (this.lastBlockEl?.tagName === 'P') {
+            return this.lineIndent < 4 ? this.startSetextWatch('-', p, false) : this._blockDefault(ch);
+          }
+          return this.startHrWatch('-', p.split('-').length - 1, false);
         }
         if (p.length === 4) {
           if (p === '- - ') return;
@@ -438,7 +441,7 @@ class MarkdownStreamer {
         this._blockDefault(ch); return;
 
       case '=':
-        if (this.lastBlockEl?.tagName === 'P') { this.startSetextWatch('=', p, ch !== '='); return; }
+        if (this.lastBlockEl?.tagName === 'P' && this.lineIndent < 4) { this.startSetextWatch('=', p, ch !== '='); return; }
         this._blockDefault(ch); return;
 
       case '[': {
@@ -528,7 +531,10 @@ class MarkdownStreamer {
       if (ch !== '-' && ch !== ':' && ch !== ' ' && ch !== '|') this.sepFailed = true;
     }
     if (this.setextWatch) {
-      if (ch === this.setextChar) this.setextBuf += ch;
+      // The underline chars may have trailing spaces/tabs after them, but
+      // no more underline chars once whitespace has started.
+      if (ch === this.setextChar && !this.setextTrailing) this.setextBuf += ch;
+      else if (ch === ' ' || ch === '\t') { this.setextTrailing = true; this.setextBuf += ch; }
       else { this.setextFailed = true; this.setextBuf += ch; }
       return;
     }

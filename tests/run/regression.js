@@ -373,6 +373,24 @@ test('a tab after "#" is a valid ATX heading separator', () => {
   assert.match(render('#\tFoo'), /<h1>Foo<\/h1>/);
 });
 
+// ── Setext heading underline: indentation and trailing whitespace ─────────
+test('a setext underline with up to 3 leading spaces is still valid', () => {
+  assert.match(render('Foo\n   ----\n'), /<h2>Foo<\/h2>/);
+});
+
+test('a setext underline with trailing spaces/tabs is still valid', () => {
+  assert.match(render('Foo\n----   \n'), /<h2>Foo<\/h2>/);
+});
+
+test('a setext underline indented 4+ spaces is NOT valid (stays paragraph text)', () => {
+  // Regression: continuation lines silently swallow all leading whitespace
+  // (so the paragraph can lazily continue), which meant a 4-space-indented
+  // "---" lost its indent before setext-detection ever saw it, and wrongly
+  // became a heading instead of staying literal text.
+  const html = render('Foo\n    ---\n');
+  assert.doesNotMatch(html, /<h2>/);
+  assert.match(html, /<p>Foo ---<\/p>/);
+});
 
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
