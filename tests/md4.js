@@ -87,6 +87,7 @@ class MarkdownStreamer {
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlTag = null;
 
     this.sepWatch = false; this.sepFailed = false; this.sepRowEl = null; this.sepBuf = '';
+    this.needsJoinSpace = false;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ class MarkdownStreamer {
 
   // ── Newline ────────────────────────────────────────────────────────────────
   onNewline() {
+    this.needsJoinSpace = false;
     if (this.defPending) { this.flushDefPending(); this.resetLine(); return; }
 
     if (this.sepWatch && this.inTable) {
@@ -182,12 +184,14 @@ class MarkdownStreamer {
       if (!this.setextFailed && this.setextBuf.length >= 1) this.resolveSetext(this.setextChar === '=' ? 'h1' : 'h2');
       else this.flushSetextAsFallback();
       this._resetSetext();
+      this.needsJoinSpace = this.dom.currentTag() === 'P';
       this.resetLine(); return;
     }
     if (this.hrWatch) {
       if (!this.hrFailed && this.hrCount >= 3) this.makeHr();
       else this.flushHrAsFallback();
       this._resetHr();
+      this.needsJoinSpace = this.dom.currentTag() === 'P';
       this.resetLine(); return;
     }
 
@@ -212,7 +216,9 @@ class MarkdownStreamer {
       } else if (p[0] === '-' && /^- /.test(p)) {
         this.openUlDecided(p.slice(2));
       } else if (p[0] === '[') {
-        this.fallbackToParagraph();
+        const tag = this.dom.currentTag();
+        if (tag === 'P' || tag === 'LI' || tag === 'DD') { this.feedPendingAsInline(); this.blockDecided = true; }
+        else this.fallbackToParagraph();
       }
       this.pending = '';
     }
@@ -225,10 +231,12 @@ class MarkdownStreamer {
       this.resetLine(); return;
     }
 
+    let hardBreak = false;
     if ((this.trailingSpaces >= 2 || this.escapeNext) && this.blockDecided) {
       if (this.textNode) this.textNode.data = this.textNode.data.replace(/ +$/, '');
       this.dom.current.appendChild(document.createElement('br'));
       this.textNode = null;
+      hardBreak = true;
     }
     this.escapeNext = false;
 
@@ -254,6 +262,8 @@ class MarkdownStreamer {
 
     this._popMarkers();
     if (this.inFootnoteDef) { this.dom.toRoot(); this.inFootnoteDef = false; this.footnoteDefId = ''; }
+    const tag = this.dom.currentTag();
+    this.needsJoinSpace = !hardBreak && (tag === 'P' || tag === 'LI' || tag === 'DD');
     this.resetLine();
   }
 
@@ -271,11 +281,12 @@ class MarkdownStreamer {
   _blockDefault(ch) {
     if (this.defPending) { this.defPending.value += ch; return; }
     const tag = this.dom.currentTag();
-    if (tag === 'P' || tag === 'LI' || tag === 'DD') { this._bd(); this.feedPendingAsInline(); return; }
+    if (tag === 'P' || tag === 'LI' || tag === 'DD') { this.feedPendingAsInline(); this.blockDecided = true; return; }
     this.fallbackToParagraph();
   }
 
   decideBlock(ch) {
+    if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); }
     this.pending += ch;
     const p = this.pending;
 
@@ -288,7 +299,7 @@ class MarkdownStreamer {
           const h = this.dom.push('h' + Math.min(level, 6)); this.lastBlockEl = h;
           this._bd(); this.atxLevel = level; return;
         }
-        if (ch !== '#') this.fallbackToParagraph();
+        if (ch !== '#') this._blockDefault(ch);
         return;
 
       case '>': {
@@ -310,7 +321,7 @@ class MarkdownStreamer {
           this.fenceCount = fenceCount; this.fencePrefix = ch; this.closingFenceBuf = null;
           this._bd(); return;
         }
-        this.fallbackToParagraph(); return;
+        this._blockDefault(ch); return;
       }
 
       case '|':
@@ -326,21 +337,21 @@ class MarkdownStreamer {
           const bracketIdx = p.indexOf(']', 2);
           if (bracketIdx === -1) return;
           if (p.length === bracketIdx + 1) return;
-          this.fallbackToParagraph(); return;
+          this._blockDefault(ch); return;
         }
         // Unordered list / thematic break
         if (p.length === 1) return;
         if (p.length === 2) {
           if (p[1] === ' ') return this.openUlDecided('');
-          if (p[1] !== '*') return this.fallbackToParagraph();
+          if (p[1] !== '*') return this._blockDefault(ch);
           return;
         }
-        if (p.length === 3) { if (p === '***') return; this.fallbackToParagraph(); return; }
+        if (p.length === 3) { if (p === '***') return; this._blockDefault(ch); return; }
         if (p.length === 4) {
           if (p[3] === ' ' || p[3] === '*') return this.startHrWatch('*', p.split('*').length - 1, false);
-          this.fallbackToParagraph(); return;
+          this._blockDefault(ch); return;
         }
-        this.fallbackToParagraph(); return;
+        this._blockDefault(ch); return;
       }
 
       case '-':
@@ -370,11 +381,11 @@ class MarkdownStreamer {
       case '+':
         if (p.length === 1) return;
         if (p[1] === ' ') { this.openUlDecided(p.slice(2)); return; }
-        this.fallbackToParagraph(); return;
+        this._blockDefault(ch); return;
 
       case '_':
         if (/^[_ ]+$/.test(p)) return;
-        this.fallbackToParagraph(); return;
+        this._blockDefault(ch); return;
 
       case '=':
         if (this.lastBlockEl?.tagName === 'P') { this.startSetextWatch('=', p, ch !== '='); return; }
@@ -398,14 +409,14 @@ class MarkdownStreamer {
             this._bd(); return;
           }
           if (!p.includes(']') || p[p.length - 1] === ']') return;
-          this.fallbackToParagraph(); return;
+          this._blockDefault(ch); return;
         }
         // Reference link definition [label]:
         if (!p[1]) return;
         const ci = p.indexOf(']:');
         if (ci > 1) { this.defPending = { type: 'ref', key: p.slice(1, ci).toLowerCase(), value: '' }; this._bd(); return; }
         if (!p.includes(']') || p[p.length - 1] === ']') return;
-        this.fallbackToParagraph(); return;
+        this._blockDefault(ch); return;
       }
 
       case '<': {
@@ -422,7 +433,7 @@ class MarkdownStreamer {
           this.closeBlock(); this.inRawHtml = true; this.rawHtmlBuf = p; this.rawHtmlTag = null;
           this._bd(); return;
         }
-        this.fallbackToParagraph(); return;
+        this._blockDefault(ch); return;
       }
 
       case ':': {
@@ -447,10 +458,10 @@ class MarkdownStreamer {
           let i = 1;
           while (i < p.length && p[i] >= '0' && p[i] <= '9') i++;
           if (i === p.length) return;
-          if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this.fallbackToParagraph(); return; }
+          if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this._blockDefault(ch); return; }
           if (i + 1 === p.length) return;
           if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent); this._bd(); return; }
-          this.fallbackToParagraph(); return;
+          this._blockDefault(ch); return;
         }
         this._blockDefault(ch);
     }
@@ -974,8 +985,13 @@ class MarkdownStreamer {
     this.dom.replaceAt(p, h);
     this.lastBlockEl = h; this.textNode = null;
   }
-  flushSetextAsFallback() { this.closeBlock(); this.openParagraph(); this.writeText(this.setextBuf); }
-  flushHrAsFallback()     { this.closeBlock(); this.openParagraph(); this.writeText(this.hrChar.repeat(this.hrCount)); }
+  _appendOrNewParagraph(text) {
+    const tag = this.dom.currentTag();
+    if (tag === 'P' || tag === 'LI' || tag === 'DD') { this.writeText(text); return; }
+    this.closeBlock(); this.openParagraph(); this.writeText(text);
+  }
+  flushSetextAsFallback() { this._appendOrNewParagraph(this.setextBuf); }
+  flushHrAsFallback()     { this._appendOrNewParagraph(this.hrChar.repeat(this.hrCount)); }
 
   // ── Table ──────────────────────────────────────────────────────────────────
   openTable() {
