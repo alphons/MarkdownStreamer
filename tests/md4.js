@@ -83,6 +83,7 @@ class MarkdownStreamer {
     this.sepWatch = false; this.sepFailed = false; this.sepRowEl = null; this.sepBuf = '';
     this.needsJoinSpace = false; this.hadJoinSpace = false;
     this.codeCloseRun = 0;
+    this._inBlockquoteContent = false;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -213,7 +214,13 @@ class MarkdownStreamer {
         this._continueOrFallback();
       } else if (p[0] === '>') {
         const { level } = this._bqLevel(p);
-        if (level > 0) { this.ensureBlockquote(level); this.openParagraph(); }
+        // A blank line inside the blockquote (just ">" markers, no content)
+        // ends the current paragraph, same as a top-level blank line.
+        if (level > 0) {
+          if (this.dom.currentTag() === 'P') this.dom.pop();
+          this.ensureBlockquote(level);
+          this.openParagraph();
+        }
       } else if ((p[0] === '`' || p[0] === '~') && p.length >= 3 && p.split('').every(c => c === p[0])) {
         this.closeBlock(); this.inCodeFence = true; this.fenceChar = p[0];
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
@@ -335,6 +342,7 @@ class MarkdownStreamer {
     this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null; this.autolinkQuote = null;
     this.taskCheckBuf = null; this.taskCheckDone = false;
     this.codeCloseRun = 0;
+    this._inBlockquoteContent = false;
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
@@ -367,8 +375,28 @@ class MarkdownStreamer {
       case '>': {
         const { level, i } = this._bqLevel(p);
         if (i === p.length) return;
-        this.ensureBlockquote(level); this.openParagraph(); this._bd();
-        for (const c of p.slice(i)) { this.onInlineChar(c); this.lastChar = c; }
+        this.ensureBlockquote(level);
+        // Replay the content after the ">" markers through decideBlock
+        // itself (not straight to inline text) so a heading, list, fence,
+        // etc. inside a blockquote is recognized as one, not forced into a
+        // paragraph. If dom.current is still an open P/LI/DD (ensureBlockquote
+        // only resets when the quote depth actually changed), the normal
+        // continuation checks in _blockDefault() etc. keep it open as usual.
+        this.pending = ''; this.blockDecided = false;
+        this._inBlockquoteContent = true;
+        for (const c of p.slice(i)) {
+          if (this.blockDecided) {
+            if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
+            this.onContentChar(c);
+          } else {
+            this.decideBlock(c);
+          }
+          this.lastChar = c;
+        }
+        // NOT reset here: block-type detection for this content may take
+        // several more characters (e.g. an ATX heading waits for the
+        // trailing space), which arrive as separate top-level processChar()
+        // calls — reset happens once per line, in resetLine().
         return;
       }
 
@@ -1193,21 +1221,46 @@ class MarkdownStreamer {
     if (this.bareUrlOpen) this.closeBareUrl();
     this._popMarkers();
     this.textNode = null;
-    if (this.dom.depth() > 1) this.dom.toRoot();
+    if (this.dom.depth() > 1) this._popToBlockContainer();
     if (this.inTable) { this.inTable = false; this.tableHeadDone = false; this.inCell = false; this.tableColAlign = []; this.tableColIndex = 0; }
     this.inFootnoteDef = false;
     this.inIndentCode = false; this.pendingIndentNL = 0;
   }
 
+  // Pops back to the nearest ancestor that can directly hold new block-level
+  // children (a BLOCKQUOTE or the document root) — used instead of an
+  // unconditional dom.toRoot() so that opening a heading/list/fence/
+  // paragraph *inside* a blockquote doesn't blow away that nesting and land
+  // back at the top level. Deliberately does NOT also stop at a list LI:
+  // unlike a blockquote's lazy-continuation rules, whether a new block
+  // belongs inside a list item depends on its indentation relative to the
+  // marker (not yet tracked here) — e.g. an unindented "---" after a list
+  // item must end the list, not nest a stray <hr> inside its last <li>.
+  _popToBlockContainer() {
+    while (this.dom.current !== this.dom.bottomStack) {
+      // Only preserve BLOCKQUOTE nesting while actively processing a line
+      // that itself had a ">" prefix (see case '>' in decideBlock). A
+      // construct with NO ">" prefix — a bare "***"/blank line following
+      // quoted content — ends the blockquote like any other interruption,
+      // it doesn't belong inside it.
+      if (this._inBlockquoteContent && this.dom.currentTag() === 'BLOCKQUOTE') return;
+      this.dom.pop();
+    }
+  }
+
   openParagraph() { const p = this.dom.push('p'); this.lastBlockEl = p; this.textNode = null; }
 
   ensureBlockquote(level) {
+    let depth = 0, _e = this.dom.current;
+    while (_e) { if (_e.tagName === 'BLOCKQUOTE') depth++; if (_e === this.dom.bottomStack) break; _e = _e.parentNode; }
+    // Already at the right nesting depth — this is a continuation line of
+    // the same blockquote (possibly still inside an open P/LI/DD for lazy
+    // continuation), so leave dom.current alone instead of always popping.
+    if (depth === level) return;
     this.flushInlinePending();
     this._popMarkers();
     this.textNode = null;
     if (this.dom.currentTag() === 'P') this.dom.pop();
-    let depth = 0, _e = this.dom.current;
-    while (_e) { if (_e.tagName === 'BLOCKQUOTE') depth++; if (_e === this.dom.bottomStack) break; _e = _e.parentNode; }
     if (depth === 0 && this.dom.depth() > 1) this.dom.toRoot();
     while (depth < level) { this.dom.push('blockquote'); depth++; }
     while (depth > level) {

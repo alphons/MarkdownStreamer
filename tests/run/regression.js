@@ -463,6 +463,49 @@ test('entities in a link URL/title are decoded, and the URL is percent-encoded',
   assert.match(html, /title="föö"/);
 });
 
+// ── Blockquote content goes through real block detection ──────────────────
+test('a heading inside a blockquote is recognized as a heading, not literal text', () => {
+  assert.match(render('> # Foo\n> bar\n> baz\n'), /<blockquote><h1>Foo<\/h1><p>bar baz<\/p><\/blockquote>/);
+});
+
+test('a fence opening inside a blockquote is recognized (single-line content)', () => {
+  // Full multi-line fence-in-blockquote support (stripping the ">" prefix
+  // from each subsequent fence-content line) is a known remaining gap —
+  // once inCodeFence is true, processChar short-circuits straight to raw
+  // fence-content handling before blockquote-prefix stripping ever runs.
+  assert.match(render('> ```js\n'), /<blockquote><pre><code class="language-js">/);
+});
+
+test('consecutive ">" lines merge into one paragraph (lazy continuation)', () => {
+  assert.match(render('> foo\n> bar\n'), /<blockquote><p>foo bar<\/p><\/blockquote>/);
+});
+
+test('a blockquote paragraph continues even on a line with no ">" prefix (lazy continuation)', () => {
+  assert.match(render('> bar\nbaz\n'), /<blockquote><p>bar baz<\/p><\/blockquote>/);
+});
+
+test('a plain (unprefixed) blank line still ends the blockquote', () => {
+  // Regression: fixing lazy-continuation inside blockquotes by preserving
+  // BLOCKQUOTE nesting through closeBlock() initially preserved it even for
+  // content that never had a ">" prefix at all, wrongly keeping unrelated
+  // top-level content nested inside.
+  const html = render('> bar\n\nbaz\n');
+  assert.match(html, /<blockquote><p>bar<\/p><\/blockquote><p>baz<\/p>/);
+});
+
+test('an unprefixed thematic break after a blockquote ends it, not nests inside it', () => {
+  const html = render('> aaa\n***\n> bbb\n');
+  assert.match(html, /<blockquote><p>aaa<\/p><\/blockquote><hr><blockquote><p>bbb<\/p><\/blockquote>/);
+});
+
+test('an unindented thematic break after a list item ends the list, not nests inside it', () => {
+  // Regression: closeBlock()'s container-preserving fix must not also
+  // apply to list items (indentation-relative-to-marker decides that,
+  // unlike a blockquote's simpler lazy-continuation rule).
+  const html = render('- Foo\n---\n');
+  assert.match(html, /<ul><li>Foo<\/li><\/ul><hr>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
