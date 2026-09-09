@@ -392,6 +392,21 @@ test('a setext underline indented 4+ spaces is NOT valid (stays paragraph text)'
   assert.match(html, /<p>Foo ---<\/p>/);
 });
 
+// ── Fenced code block closing-fence length matching ────────────────────────
+test('a fenced code block closes on a LONGER closing fence, not just exact length', () => {
+  const html = render('````\naaa\n```\n``````\n');
+  assert.match(html, /<pre><code>aaa\n```\n<\/code><\/pre>/, 'the too-short "```" mid-block stays as content');
+});
+
+test('a shorter fence-char run than the opener stays as literal content, not lost', () => {
+  const html = render('~~~~\naaa\n~~~\n~~~~\n');
+  assert.match(html, /<pre><code>aaa\n~~~\n<\/code><\/pre>/);
+});
+
+test('content before a fence-char run on the same line is not itself withheld', () => {
+  assert.match(render('```\naaa```\n```\n'), /<pre><code>aaa```\n<\/code><\/pre>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

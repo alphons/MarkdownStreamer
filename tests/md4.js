@@ -77,7 +77,7 @@ class MarkdownStreamer {
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.refDefs = {};
     this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0;
-    this.fenceChar = '`'; this.fencePrefix = ''; this.closingFenceBuf = null;
+    this.fenceChar = '`'; this.fencePrefix = ''; this.closingFenceBuf = null; this.fenceLineHasContent = false;
     this.inTable = false; this.tableHeadDone = false; this.tableColAlign = [];
     this.tableColIndex = 0; this.inCell = false; this.tablePipePending = false;
     this._resetSetext(); this._resetHr();
@@ -1093,23 +1093,32 @@ class MarkdownStreamer {
       if (lang) code.className = 'language-' + lang;
       pre.appendChild(code);
       this.textNode = document.createTextNode(''); code.appendChild(this.textNode);
-      this.closingFenceBuf = ''; return;
+      this.closingFenceBuf = ''; this.fenceLineHasContent = false; return;
     }
-    if (this.closingFenceBuf === this.fenceChar.repeat(this.fenceCount || 3)) {
+    // A run of (only) the fence char spanning the WHOLE line, at least as
+    // long as the opening fence, closes it — a longer closer is allowed,
+    // not just an exact-length match.
+    if (!this.fenceLineHasContent && this.closingFenceBuf.length >= (this.fenceCount || 3)) {
       this.inCodeFence = false; this.closingFenceBuf = null; this.textNode = null;
       const pre = this.dom.find('PRE'); if (pre) this._pop(pre);
       this.lastBlockEl = null; this.resetLine(); return;
     }
+    // Wasn't a valid closer after all — the withheld run is literal content.
+    if (this.closingFenceBuf && this.textNode) this.textNode.data += this.closingFenceBuf;
     if (this.textNode) this.textNode.data += '\n';
-    this.closingFenceBuf = '';
+    this.closingFenceBuf = ''; this.fenceLineHasContent = false;
   }
 
   feedCodeFenceLine(ch) {
-    this.closingFenceBuf += ch;
-    const fc = this.fenceCount || 3;
-    const fence = this.fenceChar.repeat(fc);
-    if (this.closingFenceBuf === fence) return;
-    if (this.closingFenceBuf.startsWith(this.fenceChar) && this.closingFenceBuf.length <= fc) return;
+    // Only the *start* of a line can open a potential closing-fence run —
+    // once any other content has been written this line, later fence-char
+    // runs (e.g. the "```" in "aaa```") can't retroactively become one.
+    if (!this.fenceLineHasContent && ch === this.fenceChar) { this.closingFenceBuf += ch; return; }
+    if (this.closingFenceBuf) {
+      if (this.textNode) this.textNode.data += this.closingFenceBuf;
+      this.closingFenceBuf = '';
+    }
+    this.fenceLineHasContent = true;
     if (this.textNode) this.textNode.data += ch;
   }
 
