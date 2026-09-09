@@ -225,9 +225,9 @@ class MarkdownStreamer {
 
     if (!this.blockDecided) {
       const tag = this.dom.currentTag();
-      if      (tag === 'P')  { this.dom.pop(); this.textNode = null; }
-      else if (tag === 'LI') { this.dom.toRoot(); this.listStack = []; this.textNode = null; }
-      else if (tag === 'DD') { this.dom.toRoot(); this.textNode = null; }
+      if      (tag === 'P')  { this.dom.pop(); this.textNode = null; this.lastBlockEl = null; }
+      else if (tag === 'LI') { this.dom.toRoot(); this.listStack = []; this.textNode = null; this.lastBlockEl = null; }
+      else if (tag === 'DD') { this.dom.toRoot(); this.textNode = null; this.lastBlockEl = null; }
       this.resetLine(); return;
     }
 
