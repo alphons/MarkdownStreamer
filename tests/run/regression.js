@@ -1,0 +1,190 @@
+'use strict';
+// Regression suite for md4.js — locks in bugs found and fixed during the
+// 2026-09-09 session (see git log). Every case here reproduced a real,
+// observed rendering bug; run `npm test` after any change to decideBlock()
+// or the inline state machine to catch reintroductions.
+const assert = require('assert');
+const { render, renderAsync } = require('./render');
+
+const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
+
+function countTag(html, tag) {
+  const m = html.match(new RegExp(`<${tag}[ >]`, 'g'));
+  return m ? m.length : 0;
+}
+
+// ── Soft line breaks: no dropped characters, joined with a space ──────────
+test('two-line paragraph keeps all characters and joins with a space', () => {
+  const html = render('Hello world\nSecond line here');
+  assert.strictEqual(countTag(html, 'p'), 1, 'should be a single <p>');
+  assert.match(html, /Hello world Second line here/, 'no dropped chars / missing join space');
+});
+
+test('three-line paragraph with mixed emphasis markers stays one paragraph', () => {
+  const html = render('Alpha\n*Beta*\n_Gamma_\n`Delta`');
+  assert.strictEqual(countTag(html, 'p'), 1, 'ambiguous markers must not split the paragraph');
+  assert.match(html, /Alpha <em>Beta<\/em> <em>Gamma<\/em> <code>Delta<\/code>/);
+});
+
+// ── Consecutive badge images must merge into one paragraph, inline ────────
+test('two badge links on consecutive lines merge into one paragraph', () => {
+  const html = render('[![Version](v.png)](v.html)\n[![License](l.png)](l.html)');
+  assert.strictEqual(countTag(html, 'p'), 1, 'badges must not split into separate paragraphs');
+  assert.strictEqual(countTag(html, 'img'), 2);
+  assert.match(html, /<\/a> <a /, 'badges should be space-separated, not glued together');
+});
+
+test('seven badge links on consecutive lines merge into one paragraph', () => {
+  const lines = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+    .map((l) => `[![${l}](${l}.png)](${l}.html)`)
+    .join('\n');
+  const html = render(lines);
+  assert.strictEqual(countTag(html, 'p'), 1);
+  assert.strictEqual(countTag(html, 'img'), 7);
+});
+
+// ── Blank lines must still separate paragraphs ─────────────────────────────
+test('a blank line still separates two paragraphs', () => {
+  const html = render('Para one\n\nPara two');
+  assert.strictEqual(countTag(html, 'p'), 2);
+  assert.match(html, /<p>Para one<\/p>/);
+  assert.match(html, /<p>Para two<\/p>/);
+  assert.doesNotMatch(html, /<\/p>\s+<p>/, 'no stray whitespace text node between paragraphs');
+});
+
+test('reference-link definition after a blank line still resolves', () => {
+  const html = render('Some text\n\n[ref]: https://example.com\n\n[link][ref]');
+  assert.match(html, /href="https:\/\/example\.com"/);
+});
+
+test('footnote definition after a blank line still resolves', () => {
+  const html = render('Text with note[^1]\n\n[^1]: Footnote text here');
+  assert.match(html, /class="fn-ref"/);
+  assert.match(html, /Footnote text here/);
+});
+
+// ── Genuine block constructs must still interrupt an open paragraph ───────
+test('a real ATX heading interrupts an open paragraph', () => {
+  const html = render('Some text\n# Real Heading\nMore text');
+  assert.match(html, /<h1>Real Heading<\/h1>/);
+  assert.strictEqual(countTag(html, 'p'), 2);
+});
+
+test('an invalid heading (7 hashes) is treated as continuation text', () => {
+  const html = render('Some text\n####### Not a heading');
+  assert.strictEqual(countTag(html, 'p'), 1);
+  assert.strictEqual(countTag(html, 'h1'), 0);
+});
+
+test('a real thematic break after a blank line interrupts', () => {
+  const html = render('Some text\n\n---\n\nMore text');
+  assert.strictEqual(countTag(html, 'hr'), 1);
+  assert.strictEqual(countTag(html, 'p'), 2);
+});
+
+test('a real fenced code block interrupts and preserves content', () => {
+  const html = render('Text before\n```js\nconst x = 1;\n```\nText after');
+  assert.match(html, /<pre><code class="language-js">const x = 1;\n<\/code><\/pre>/);
+  assert.strictEqual(countTag(html, 'p'), 2);
+});
+
+test('an unclosed fence marker (2 backticks) is treated as continuation text', () => {
+  const html = render('Text\n``not a fence');
+  assert.strictEqual(countTag(html, 'p'), 1);
+  assert.strictEqual(countTag(html, 'pre'), 0);
+});
+
+test('a real blockquote interrupts an open paragraph', () => {
+  const html = render('Text\n> Quoted');
+  assert.match(html, /<blockquote><p>Quoted<\/p><\/blockquote>/);
+});
+
+test('real unordered/ordered/plus lists interrupt an open paragraph', () => {
+  assert.match(render('Text\n- one\n- two'), /<ul><li>one<\/li><li>two<\/li><\/ul>/);
+  assert.match(render('Text\n1. one\n2. two'), /<ol><li>one<\/li><li>two<\/li><\/ol>/);
+  assert.match(render('Text\n+ item'), /<ul><li>item<\/li><\/ul>/);
+});
+
+test('a list item does not leak a trailing join-space before the next item', () => {
+  const html = render('- one\n- two\n- three');
+  assert.doesNotMatch(html, /<li>one <\/li>|<li>two <\/li>/, 'join-space must not fire when the next line opens a new list item');
+});
+
+test('a list marker without a following space is continuation text', () => {
+  const html = render('Text\n+nope');
+  assert.strictEqual(countTag(html, 'ul'), 0);
+  assert.match(html, /\+nope/);
+});
+
+// ── Setext headings: only when directly under a paragraph, no blank line ──
+test('setext "---" directly under text becomes an h2', () => {
+  const html = render('Text\n---\nMore');
+  assert.match(html, /<h2>Text\s*<\/h2>/);
+});
+
+test('setext "===" directly under text becomes an h1', () => {
+  const html = render('Text\n===\nMore');
+  assert.match(html, /<h1>Text\s*<\/h1>/);
+});
+
+test('"---" after a BLANK line is a thematic break, not a setext heading', () => {
+  const html = render('Text\n\n---\nMore');
+  assert.strictEqual(countTag(html, 'h2'), 0, 'must not retroactively convert the earlier paragraph to h2');
+  assert.strictEqual(countTag(html, 'hr'), 1);
+  assert.match(html, /<p>Text<\/p>/);
+});
+
+test('"===" after a blank line stays as plain text (no prior paragraph to convert)', () => {
+  const html = render('Text\n\n===\nMore');
+  assert.strictEqual(countTag(html, 'h1'), 0);
+  assert.match(html, /<p>Text<\/p>/);
+});
+
+// ── Raw HTML block passthrough ─────────────────────────────────────────────
+test('a raw <div> block passes through unescaped', () => {
+  const html = render('<div>hello</div>\n');
+  assert.strictEqual(html, '<div>hello</div>');
+});
+
+test('a raw <p align="..."> block passes through unescaped, not as literal text', () => {
+  const html = render('<p align="center">hi</p>\n');
+  assert.doesNotMatch(html, /&lt;p/, 'the tag must not be HTML-escaped');
+  assert.match(html, /<p align="center">hi<\/p>/);
+});
+
+// ── Async streaming must match the sync path and must terminate ───────────
+test('async streaming renders the same as sync and terminates', async () => {
+  const md = '[![Version](v.png)](v.html)\n[![License](l.png)](l.html)\n\nDone.';
+  const syncHtml = render(md);
+  const asyncHtml = await Promise.race([
+    renderAsync(md),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('streaming hung (timeout)')), 5000)),
+  ]);
+  assert.strictEqual(asyncHtml, syncHtml);
+});
+
+// ── Runner ──────────────────────────────────────────────────────────────
+(async () => {
+  let passed = 0;
+  const failures = [];
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      passed++;
+    } catch (err) {
+      failures.push({ name, err });
+    }
+  }
+
+  console.log(`\n${passed} passed, ${failures.length} failed (of ${tests.length})\n`);
+  if (failures.length > 0) {
+    for (const { name, err } of failures) {
+      console.log(`✗ ${name}`);
+      console.log(`  ${err.message}\n`);
+    }
+    process.exitCode = 1;
+  } else {
+    console.log('All regression checks passed.');
+  }
+})();

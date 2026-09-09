@@ -1,0 +1,13 @@
+{
+  "name": "markdownstreamer",
+  "private": true,
+  "version": "1.1.0",
+  "description": "Regression and CommonMark conformance tests for md4.js",
+  "scripts": {
+    "test": "node tests/run/regression.js",
+    "test:commonmark": "node tests/run/commonmark-report.js"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}
