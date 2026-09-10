@@ -1051,6 +1051,11 @@ test('a fence as a list marker\'s own first content (same line) stays nested ins
   assert.strictEqual(html, '<ol><li><pre><code>foo\n</code></pre><p>bar</p></li></ol>');
 });
 
+test('listStack is trimmed when a block (HTML comment) closes outside the tracked list, so a later unrelated list starts fresh instead of attaching to the stale one', () => {
+  const html = render('- foo\n- bar\n\n<!-- -->\n\n- baz\n- bim\n');
+  assert.strictEqual(html, '<ul><li>foo</li><li>bar</li></ul><!-- --><ul><li>baz</li><li>bim</li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

@@ -2402,6 +2402,27 @@ class MarkdownStreamer {
     this.textNode = null;
     this._flushEmphasis(this.lastBlockEl);
     if (this.dom.depth() > 1) this._popToBlockContainer();
+    // A block that just opened somewhere NOT inside the innermost
+    // still-tracked list (most commonly: an HTML block, fence, or heading
+    // that popped all the way out past it) leaves listStack stale —
+    // pointing at a <ul>/<ol> no longer on dom.current's ancestor chain —
+    // which corrupts a LATER, unrelated list's nesting decisions (the
+    // same hazard fallbackToParagraph() already guards against, but only
+    // for the specific paths that call it; this covers every other one).
+    // Trimmed level by level, innermost first, so exiting one nested list
+    // level while still validly inside an OUTER one only drops that one
+    // entry, not the whole stack.
+    while (this.listStack.length > 0) {
+      const entry = this.listStack[this.listStack.length - 1];
+      let el = this.dom.current, stillInside = false;
+      while (el) {
+        if (el === entry.el) { stillInside = true; break; }
+        if (el === this.dom.bottomStack) break;
+        el = el.parentNode;
+      }
+      if (stillInside) break;
+      this.listStack.pop();
+    }
     if (this.inTable) { this.inTable = false; this.tableHeadDone = false; this.inCell = false; this.tableColAlign = []; this.tableColIndex = 0; }
     this.inFootnoteDef = false;
     this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
