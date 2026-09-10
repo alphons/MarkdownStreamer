@@ -931,6 +931,15 @@ class MarkdownStreamer {
 
     if (ch === '!') { this.linkState = 'bang'; this.linkIsImage = true; this.prevCharWs = false; return; }
     if (ch === '[') {
+      // CommonMark: links cannot nest — a "[" while already inside an open
+      // link label is just a literal character (an image CAN still nest
+      // inside a link, handled separately via "bang" above). Not the full
+      // bracket-matching algorithm (which would also let an outer "["
+      // "reclaim" this position if the resulting inner "[...]" never turns
+      // out to be a valid link itself) — a scoped, lower-risk improvement
+      // over unconditionally opening a nested <a>, which produced invalid
+      // nested-anchor markup for any "[...[...]...]" content.
+      if (this.dom.find('A')) { this.appendToTextNode(ch); this.prevCharWs = false; return; }
       const a = this.dom.push('a'); this.initAnchor(a);
       this.textNode = null;
       this.linkState = 'label_open'; this.urlBuf = ''; this.linkBuf = '';

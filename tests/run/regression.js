@@ -794,6 +794,11 @@ test('a link destination/title attempt that never reaches its closing ")" before
   assert.match(html, /^<p>\[link\]\(foo.bar\)<\/p>$/);
 });
 
+test('a "[" while already inside an open link label never creates an invalid nested <a>', () => {
+  const html = render('[foo [bar](/uri)](/uri2)\n');
+  assert.ok(!/<a[^>]*>[^<]*<a/.test(html), 'must not nest <a> inside <a>: ' + html);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
