@@ -892,6 +892,32 @@ test('a link reference definition cannot interrupt an already-open paragraph', (
   assert.strictEqual(html, '<p>Foo [bar]: /baz</p><p>[bar]</p>');
 });
 
+// ── Link reference definition grammar (CommonMark 4.7) ──────────────────────
+test('a link reference definition can span multiple lines (destination and title each on their own line)', () => {
+  const html = render('[foo]:\n/url\n\n[foo]\n');
+  assert.match(html, /<a[^>]*href="\/url"[^>]*>foo<\/a>/);
+});
+
+test('a link reference definition title may use parentheses, same as an inline link', () => {
+  const html = render('[foo]: /url (title)\n\n[foo]\n');
+  assert.match(html, /<a[^>]*href="\/url"[^>]*title="title"[^>]*>foo<\/a>/);
+});
+
+test('backslash escapes only apply to ASCII punctuation, elsewhere the backslash stays literal', () => {
+  const html = render('[link](foo' + String.fromCharCode(92) + 'bar)\n');
+  assert.match(html, /href="foo%5Cbar"/);
+});
+
+test('a reference definition with no title present still resolves; the next line is ordinary content', () => {
+  const html = render('[foo]: /url\nbar\n===\n[foo]\n');
+  assert.strictEqual(html, '<h1>bar</h1><p><a target="_blank" rel="noopener noreferrer" href="/url">foo</a></p>');
+});
+
+test('of two duplicate reference definitions, the first one wins', () => {
+  const html = render('[foo]\n\n[foo]: first\n[foo]: second\n');
+  assert.match(html, /href="first"/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

@@ -287,6 +287,39 @@ class MarkdownStreamer {
       this.resetLine(); return;
     }
 
+    if (this.defPending && this.defPending.type === 'ref') {
+      // A reference definition's destination and title may each be
+      // followed by whitespace that includes a line ending (CommonMark
+      // 4.7) — so a line ending doesn't necessarily finish the
+      // definition; keep going while there's still a chance of a
+      // destination or title continuing on the next line, and only
+      // finalize once nothing more could reasonably follow.
+      const d = this.defPending;
+      // A genuine grammar violation (not just "no title present" — that's
+      // handled by _feedDefChar()'s 'reprocess' signal, not failed) means
+      // this was never a valid definition at all; finalize (as failed)
+      // right away instead of waiting indefinitely for a blank line that
+      // may never come, silently swallowing everything after it in the
+      // meantime (the actual bug this guard exists to prevent).
+      if (d.failed) { this.flushDefPending(); this.resetLine(); return; }
+      if (d.phase === 'dest' && !d.angle && d.dest !== '') d.phase = 'gap'; // bare dest ends at whitespace, incl. a line ending
+      if (d.phase === 'title') { d.title += '\n'; this.resetLine(); return; }
+      // NOT this.pending — that's already been cleared (by _bd(), when the
+      // definition itself first started) and stays empty the whole time
+      // regardless of how many characters _feedDefChar() has consumed.
+      // linePos counts every character of the CURRENT line the normal way
+      // (processChar() increments it before dispatching anywhere), so
+      // linePos === 0 here means truly nothing — not even whitespace —
+      // was typed since the last line ending.
+      const lineBlank = this.linePos === 0;
+      if (d.phase === 'gap' || (d.phase === 'dest' && d.dest === '')) {
+        if (lineBlank) { this.flushDefPending(); this.resetLine(); return; } // nothing more can follow a blank line
+        this.resetLine(); return; // still might get a destination/title on the next line
+      }
+      // phase 'trail', or an unterminated "<...>" destination — done either way.
+      if (d.phase === 'dest' && d.angle) d.failed = true;
+      this.flushDefPending(); this.resetLine(); return;
+    }
     if (this.defPending) { this.flushDefPending(); this.resetLine(); return; }
 
     if (this.sepWatch && this.inTable) {
@@ -569,7 +602,11 @@ class MarkdownStreamer {
 
   // ── Block decision ─────────────────────────────────────────────────────────
   _blockDefault(ch) {
-    if (this.defPending) { this.defPending.value += ch; return; }
+    if (this.defPending) {
+      if (this.defPending.type === 'ref') { if (this._feedDefChar(ch) === 'reprocess') this._reprocessAfterDef(ch); }
+      else this.defPending.value += ch;
+      return;
+    }
     const tag = this.dom.currentTag();
     if (tag === 'P' || tag === 'LI' || tag === 'DD') {
       if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
@@ -579,6 +616,20 @@ class MarkdownStreamer {
   }
 
   decideBlock(ch) {
+    // A reference definition still waiting to see whether a title follows
+    // (this.defPending, phase 'gap' or an empty still-open 'dest') claims
+    // every character first, even one that would otherwise look like the
+    // start of some other block (most notably a FRESH "[label]:" —
+    // without this, that would silently overwrite the still-pending one
+    // via the "[" case below, discarding it — never flushed, never
+    // registered) — _feedDefChar()'s 'reprocess' signal is what lets this
+    // character fall through to the switch below once the old definition
+    // is actually finished, same path _blockDefault()/onContentChar() use
+    // once this line's block type is already decided.
+    if (this.defPending && this.defPending.type === 'ref') {
+      if (this._feedDefChar(ch) !== 'reprocess') return;
+      this.flushDefPending();
+    }
     this.pending += ch;
     const p = this.pending;
 
@@ -746,7 +797,14 @@ class MarkdownStreamer {
         if (!p[1]) return;
         if (['P', 'LI', 'DD'].includes(this.dom.currentTag())) { this._blockDefault(ch); return; }
         const ci = p.indexOf(']:');
-        if (ci > 1) { this.defPending = { type: 'ref', key: p.slice(1, ci).toLowerCase(), value: '' }; this._bd(); return; }
+        if (ci > 1) {
+          this.defPending = {
+            type: 'ref', key: p.slice(1, ci).toLowerCase(),
+            phase: 'dest', dest: '', title: null, titleQuote: null,
+            angle: undefined, parenDepth: 0, escapeNext: false, failed: false,
+          };
+          this._bd(); return;
+        }
         if (!p.includes(']') || p[p.length - 1] === ']') return;
         this._blockDefault(ch); return;
       }
@@ -863,7 +921,11 @@ class MarkdownStreamer {
       else if (ch !== ' ' && ch !== '\t') this.hrFailed = true;
       return;
     }
-    if (this.defPending) { this.defPending.value += ch; return; }
+    if (this.defPending) {
+      if (this.defPending.type === 'ref') { if (this._feedDefChar(ch) === 'reprocess') this._reprocessAfterDef(ch); }
+      else this.defPending.value += ch;
+      return;
+    }
     if (this.inTable && ch === '|') {
       this.flushInlinePending();
       if (this.bareUrlOpen) this.closeBareUrl();
@@ -1763,7 +1825,94 @@ class MarkdownStreamer {
     } else this.fallbackToParagraph();
   }
   initAnchor(a)         { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
-  flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref' && !(d.key in this.refDefs)) this.refDefs[d.key] = this._parseUrlBuf(d.value); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
+  flushDefPending() {
+    if (!this.defPending) return;
+    const d = this.defPending;
+    if (d.type === 'ref' && !d.failed && !(d.key in this.refDefs)) {
+      this.refDefs[d.key] = {
+        url: this._encodeUrl(this._decodeEntities(d.dest)),
+        title: d.title !== null ? this._decodeEntities(d.title) : null,
+      };
+    }
+    if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim();
+    this.defPending = null;
+  }
+
+  // Feeds one character of a reference definition's destination + title
+  // ("[label]: dest \"title\""), following the same phase state machine
+  // (dest -> gap -> title -> trail) as _feedUrlChar() for inline link
+  // destinations — the block-level form has no wrapping parens and can
+  // span multiple lines (see onNewline()'s defPending handling, which
+  // decides per line ending whether to keep going or finalize), but the
+  // destination/title grammar itself (bare vs <...>, escape rules, the
+  // three title delimiter forms) is identical.
+  // Finalizes the just-completed reference definition (destination found,
+  // no title present — a title is always optional) and re-enters ordinary
+  // block dispatch for `ch`, which belongs to whatever comes AFTER the
+  // definition, not to it. `this.pending` is reset first: it kept growing
+  // in parallel the whole time defPending was active (decideBlock() always
+  // appends to it before its own switch runs, regardless of what that
+  // switch does), so it holds stale accumulated characters, not just `ch`.
+  _reprocessAfterDef(ch) {
+    this.flushDefPending();
+    this.pending = '';
+    this.decideBlock(ch);
+  }
+
+  _feedDefChar(ch) {
+    const d = this.defPending;
+    if (d.escapeNext) {
+      d.escapeNext = false;
+      const lit = this._isPunct(ch) ? ch : '\\' + ch;
+      if (d.phase === 'dest') d.dest += lit; else if (d.phase === 'title') d.title += lit;
+      return;
+    }
+    if (ch === '\\' && (d.phase === 'dest' || d.phase === 'title')) { d.escapeNext = true; return; }
+
+    if (d.phase === 'dest') {
+      if (d.angle === undefined) {
+        // Whitespace before the destination even starts (required between
+        // "[label]:" and it, and may include a line ending — unlike the
+        // inline "(url)" form, which has no such leading gap) — just skip
+        // it, staying in 'dest' with nothing decided yet.
+        if (/\s/.test(ch)) return;
+        d.angle = ch === '<';
+        if (d.angle) return;
+      }
+      if (d.angle) {
+        if (ch === '>') { d.phase = 'gap'; return; }
+        if (ch === '<') d.failed = true;
+        d.dest += ch; return;
+      }
+      if (ch === '(') { d.parenDepth++; d.dest += ch; return; }
+      if (ch === ')') {
+        if (d.parenDepth > 0) { d.parenDepth--; d.dest += ch; return; }
+        d.failed = true; d.dest += ch; return;
+      }
+      if (/\s/.test(ch)) { d.phase = 'gap'; return; }
+      d.dest += ch; return;
+    }
+    if (d.phase === 'gap') {
+      if (/\s/.test(ch)) return;
+      if (ch === '"' || ch === "'" || ch === '(') { d.phase = 'title'; d.titleQuote = ch; d.title = ''; return; }
+      // A title is OPTIONAL — content here that isn't whitespace or a
+      // title-opening delimiter doesn't invalidate the definition (which
+      // is already complete: label + destination, no title), it just
+      // means the definition ENDS right here, and this character belongs
+      // to whatever comes next instead (e.g. the "bar" that starts a
+      // setext heading in "[foo]: /url\nbar\n===\n"). Signal the caller to
+      // finalize now and reprocess `ch` through the normal pipeline.
+      return 'reprocess';
+    }
+    if (d.phase === 'title') {
+      const closeCh = d.titleQuote === '(' ? ')' : d.titleQuote;
+      if (d.titleQuote === '(' && ch === '(') d.failed = true;
+      if (ch === closeCh) { d.phase = 'trail'; return; }
+      d.title += ch; return;
+    }
+    // 'trail': only whitespace may follow the title.
+    if (!/\s/.test(ch)) d.failed = true;
+  }
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
   openUlDecided(s, marker) {
