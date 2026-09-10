@@ -648,6 +648,19 @@ test('a fenced code info string processes backslash escapes (e.g. "foo\\+bar" ->
   assert.match(html, /class="language-foo\+bar"/);
 });
 
+test('an ATX heading strips leading whitespace before its content', () => {
+  assert.strictEqual(render('#                  foo                     \n'), '<h1>foo</h1>');
+});
+
+test('a bare "#" alone on a line (no space, no content) is still an empty heading', () => {
+  assert.strictEqual(render('#\n'), '<h1></h1>');
+});
+
+test('a fenced code info string decodes HTML entities (e.g. "f&ouml;&ouml;" -> "föö")', () => {
+  const html = render('``` f&ouml;&ouml;\nfoo\n```\n');
+  assert.match(html, /class="language-föö"/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

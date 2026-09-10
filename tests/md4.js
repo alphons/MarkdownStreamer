@@ -97,6 +97,7 @@ class MarkdownStreamer {
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
     this.liAbsorb = null;
+    this.atxSkipLeadingSpace = false;
     this.pendingListBlank = false; // NOT reset in resetLine(): set at the end of
     // a blank line (after resetLine already ran for it) and consumed at the
     // start of the NEXT line, so it must survive the resetLine() in between.
@@ -160,6 +161,10 @@ class MarkdownStreamer {
       this.decideBlock(ch); return;
     }
 
+    if (this.atxSkipLeadingSpace) {
+      if (ch === ' ' || ch === '\t') return;
+      this.atxSkipLeadingSpace = false;
+    }
     if (this.liAbsorb) {
       const a = this.liAbsorb;
       if (ch === ' ' && a.extra < 3) {
@@ -286,6 +291,14 @@ class MarkdownStreamer {
         this.makeHr();
       } else if (p[0] === '-' && /^- /.test(p)) {
         this.openUlDecided(p.slice(2), '-');
+      } else if (/^#{1,6}$/.test(p)) {
+        // A bare "#".."######" alone on a line (no trailing space, but also
+        // no more content before the newline) is still a valid — empty —
+        // ATX heading, per CommonMark: the trailing space is only required
+        // when there IS heading content to separate it from.
+        this.closeBlock(); this.listStack = [];
+        const h = this.dom.push('h' + Math.min(p.length, 6)); this.lastBlockEl = h;
+        this._bd(); this.atxLevel = p.length;
       } else {
         // No block construct matched (this covers "[" left unresolved, a
         // "**"/"__" run too short to be a thematic break, or anything else
@@ -414,6 +427,7 @@ class MarkdownStreamer {
     this._inBlockquoteContent = false;
     this._blankBeforeNewItem = false;
     this.liAbsorb = null;
+    this.atxSkipLeadingSpace = false;
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
@@ -438,7 +452,7 @@ class MarkdownStreamer {
           const level = p.length - 1;
           this.closeBlock(); this.listStack = [];
           const h = this.dom.push('h' + Math.min(level, 6)); this.lastBlockEl = h;
-          this._bd(); this.atxLevel = level; return;
+          this._bd(); this.atxLevel = level; this.atxSkipLeadingSpace = true; return;
         }
         if (ch !== '#') this._blockDefault(ch);
         return;
@@ -1389,8 +1403,8 @@ class MarkdownStreamer {
     if (!this.dom.find('PRE')) {
       // The info string is subject to backslash-escape processing, same as
       // regular inline text (e.g. "```foo\+bar" -> language "foo+bar").
-      const lang = (this.fencePrefix || '').trim().split(/\s+/)[0]
-        .replace(/\\([!-/:-@[-`{-~])/g, '$1');
+      const lang = this._decodeEntities((this.fencePrefix || '').trim().split(/\s+/)[0]
+        .replace(/\\([!-/:-@[-`{-~])/g, '$1'));
       this.fencePrefix = null;
       const pre = this.dom.push('pre');
       const code = document.createElement('code');
