@@ -951,6 +951,10 @@ test('an unprefixed "=" underline after a quoted paragraph is just lazy-continua
   assert.strictEqual(render('> foo\nbar\n===\n'), '<blockquote><p>foo bar ===</p></blockquote>');
 });
 
+test('a 4+ indented list marker after an unprefixed line inside a blockquote is lazy-continuation text, not a new list', () => {
+  assert.strictEqual(render('> foo\n    - bar\n'), '<blockquote><p>foo - bar</p></blockquote>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

@@ -216,9 +216,8 @@ class MarkdownStreamer {
       // be sitting (the <pre> from the code block just closed). Ascend
       // back up to the <li> first so e.g. a blockquote here nests inside
       // it instead of popping all the way out of the list.
-      if (this.inIndentCode && this.indentCodeListCol != null && this.lineIndent >= this.indentCodeListCol) {
-        this._ascendToLI();
-      }
+      const closedListRelativeCode = this.inIndentCode && this.indentCodeListCol != null && this.lineIndent >= this.indentCodeListCol;
+      if (closedListRelativeCode) this._ascendToLI();
       this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
       if (this.pendingListBlank) {
         this.pendingListBlank = false;
@@ -228,6 +227,28 @@ class MarkdownStreamer {
       if (this.pendingEmptyItem) {
         this.pendingEmptyItem = false;
         this._resolveListBlankContinuation(ch, false);
+        return;
+      }
+      // A list marker character (unlike most other block-starting
+      // constructs) commits to opening a new item IMMEDIATELY, mid-line,
+      // in decideBlock()'s own switch — before ever reaching the
+      // equivalent "4+ indent while continuing an open paragraph is just
+      // lazy-continuation text" check onNewline() applies to constructs
+      // that stay undecided until end of line. A marker character at 4+
+      // columns of indentation while continuing an open paragraph/list-
+      // item/definition (and NOT just having exited a list-relative
+      // indented code block, where dom.current sitting at the <li> is
+      // deliberate — see _ascendToLI() above, not a real "still
+      // continuing a paragraph" case) must not be allowed to interrupt it.
+      if (!closedListRelativeCode && this.lineIndent >= 4 && this.dom.currentTag() === 'P'
+          && /^[-*+0-9]$/.test(ch)) {
+        this.pending += ch; // _continueOrFallback() feeds `this.pending`, not `ch` directly
+        // _continueOrFallback() checks hadJoinSpace, which is normally
+        // promoted from needsJoinSpace at the top of onNewline() — but
+        // this runs mid-line (processChar(), before that promotion for
+        // THIS line has happened), so do it here instead.
+        this.hadJoinSpace = this.needsJoinSpace; this.needsJoinSpace = false;
+        this._continueOrFallback();
         return;
       }
       this.decideBlock(ch); return;
