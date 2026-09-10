@@ -959,6 +959,12 @@ test('a link reference definition inside a list item is consumed silently, witho
   assert.strictEqual(render('- a\n- b\n\n  [ref]: /url\n- d\n'), '<ul><li><p>a</p></li><li><p>b</p></li><li><p>d</p></li></ul>');
 });
 
+test('a blockquote nested inside a list item does not corrupt the list for a later sibling marker', () => {
+  const html = render('* a\n  > b\n  >\n* c\n');
+  assert.strictEqual((html.match(/<ul>/g) || []).length, 1, 'must stay one list, not split into two: ' + html);
+  assert.match(html, /<li>a<blockquote><p>b<\/p><\/blockquote><\/li><li>c<\/li>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

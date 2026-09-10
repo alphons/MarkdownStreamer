@@ -686,6 +686,17 @@ class MarkdownStreamer {
       if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
       this.feedPendingAsInline(); this.blockDecided = true; return;
     }
+    if (tag === 'BLOCKQUOTE' && this._inBlockquoteContent) {
+      // A freshly-entered blockquote (ensureBlockquote() just pushed it,
+      // no <p> inside it yet) needs one opened directly, in place — NOT
+      // the full fallbackToParagraph() (closeBlock() + listStack = []),
+      // which assumes the current container is being abandoned entirely.
+      // It isn't: this blockquote can itself be nested inside a list item
+      // (e.g. "* a\n  > b\n"), and unconditionally clearing listStack
+      // there orphaned it, so a LATER sibling marker started a whole new
+      // list instead of continuing the one still legitimately open.
+      this.openParagraph(); this.blockDecided = true; this.feedPendingAsInline(); return;
+    }
     this.fallbackToParagraph();
   }
 
