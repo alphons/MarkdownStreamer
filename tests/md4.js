@@ -2080,6 +2080,17 @@ class MarkdownStreamer {
         this.inCodeFence = false; this.fencePrefix = null; this.closingFenceBuf = null;
         this.closeBlock(); this.openParagraph(); this.blockDecided = true;
         for (const c of literal) { this.onInlineChar(c); this.lastChar = c; }
+        // A trailing backtick run right at the end of that replay (e.g.
+        // "```foo``" — the final "``" never got a chance to be confirmed
+        // as a real code-span closer or ruled out, the same situation
+        // finalize() otherwise resolves at true end-of-input) needs the
+        // same resolution here, or those characters are silently lost —
+        // sitting in the counter, never actually written anywhere.
+        if (this.codeCloseRun && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+          if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
+          else this.appendToTextNode('`'.repeat(this.codeCloseRun));
+          this.codeCloseRun = 0;
+        }
         this.resetLine(); return;
       }
       // The info string is subject to backslash-escape processing, same as

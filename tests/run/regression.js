@@ -767,8 +767,8 @@ test('a marker char right after a code span opens correctly inside it, not lost'
   assert.strictEqual(html, '<p>*foo<code>*</code></p>');
 });
 
-test('a backtick-fence-invalid line ("```foo``") falls back to a literal code span attempt, not a stuck-open one', () => {
-  assert.strictEqual(render('```foo``\n'), '<p>```foo</p>');
+test('a backtick-fence-invalid line ("```foo``") falls back to fully literal text, with no characters lost', () => {
+  assert.strictEqual(render('```foo``\n'), '<p>```foo``</p>');
 });
 
 // ── Link destination/title grammar (CommonMark 6.3) ─────────────────────────
