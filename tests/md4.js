@@ -1482,7 +1482,20 @@ class MarkdownStreamer {
   }
 
   // ── Block helpers ──────────────────────────────────────────────────────────
+  // Indented code blocks: blank lines are preserved in the MIDDLE of the
+  // block but stripped from its very start and end (CommonMark 4.4). Blank
+  // lines were written as literal newlines as they streamed in (can't know
+  // in advance whether more content follows), so trim them back out now
+  // that the block is known to be complete — called both from closeBlock()
+  // (a new block opens after this one) and finalize() (EOF right after it).
+  _trimIndentCode() {
+    if (this.inIndentCode && this.textNode) {
+      this.textNode.data = this.textNode.data.replace(/^\n+/, '').replace(/\n+$/, '\n');
+    }
+  }
+
   closeBlock() {
+    this._trimIndentCode();
     this.flushInlinePending();
     if (this.bareUrlOpen) this.closeBareUrl();
     this._popMarkers();
@@ -1650,7 +1663,10 @@ class MarkdownStreamer {
   }
   _appendOrNewParagraph(text) {
     const tag = this.dom.currentTag();
-    if (tag === 'P' || tag === 'LI' || tag === 'DD') { this.writeText(text); return; }
+    if (tag === 'P' || tag === 'LI' || tag === 'DD') {
+      if (this.hadJoinSpace) { this.hadJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
+      this.writeText(text); return;
+    }
     this.closeBlock(); this.openParagraph(); this.writeText(text);
   }
   flushSetextAsFallback() { this._appendOrNewParagraph(this.setextBuf); }
@@ -1728,6 +1744,7 @@ class MarkdownStreamer {
     // is flushed as-is rather than left stuck mid-block forever.
     if (this.inRawHtml) this.flushRawHtml();
 
+    this._trimIndentCode();
     this.flushDefPending();
     this.flushInlinePending();
     if (this.bareUrlOpen) this.closeBareUrl();

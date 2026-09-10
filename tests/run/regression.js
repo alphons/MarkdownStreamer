@@ -661,6 +661,18 @@ test('a fenced code info string decodes HTML entities (e.g. "f&ouml;&ouml;" -> "
   assert.match(html, /class="language-föö"/);
 });
 
+test('a failed setext-underline attempt still joins to its paragraph with a soft-break space', () => {
+  // "= =" isn't a valid setext underline (must be all "=", no spaces) or a
+  // thematic break, so it falls back to being ordinary paragraph text —
+  // joined to the previous line the same way any other lazy continuation
+  // line would be.
+  assert.strictEqual(render('Foo\n= =\n'), '<p>Foo = =</p>');
+});
+
+test('blank lines at the start and end of an indented code block are trimmed, not just in the middle', () => {
+  assert.strictEqual(render('\n    \n    foo\n    \n\n'), '<pre><code>foo\n</code></pre>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
