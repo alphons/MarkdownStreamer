@@ -924,6 +924,17 @@ test('an HTML block tag name immediately followed by a newline (">" on a later l
   assert.match(html, /<p>okay<\/p>/);
 });
 
+test('list-relative indented code correctly ends when a later block is less indented than the code needs', () => {
+  const html = render('1.  A paragraph\n    with two lines.\n\n        indented code\n\n    > A block quote.\n');
+  assert.ok(!html.includes('block quote'.replace(' ', '&gt; ')), 'blockquote text must not leak into the code block: ' + html);
+  assert.match(html, /<pre><code>indented code\n?<\/code><\/pre>/);
+});
+
+test('a block that follows list-relative indented code stays nested inside the same <li>', () => {
+  const html = render('1.  A paragraph\n    with two lines.\n\n        indented code\n\n    > A block quote.\n');
+  assert.match(html, /<ol><li>.*<blockquote>.*<\/blockquote><\/li><\/ol>/s);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

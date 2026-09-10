@@ -79,7 +79,7 @@ class MarkdownStreamer {
     this.bareUrlBuf = null; this.bareUrlOpen = false; this.prevCharWs = true;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.refDefs = {};
-    this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0;
+    this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
     this.fenceChar = '`'; this.fencePrefix = ''; this.closingFenceBuf = null; this.fenceLineHasContent = false;
     this.fenceOpenIndent = 0; this.fenceLineIndent = 0; this.fenceLineIndentDone = false;
     this.inTable = false; this.tableHeadDone = false; this.tableColAlign = [];
@@ -173,11 +173,20 @@ class MarkdownStreamer {
             this.textNode = document.createTextNode(''); code.appendChild(this.textNode);
             this.inIndentCode = true; this.lastBlockEl = pre;
           }
+          this.indentCodeListCol = top.contentCol;
           this.pendingListBlank = false;
           this._bd(); this.lineIndent = 0;
           return;
         }
-        if (this.lineIndent >= 4 && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
+        // Continuing an ALREADY-open indented code block that started
+        // inside a list item (indentCodeListCol, set above) must keep
+        // using that item's own trigger column, not the flat top-level 4
+        // — otherwise a later, still list-relevant but less-indented line
+        // (e.g. a blockquote at the item's plain content column) gets
+        // wrongly absorbed as more code content instead of ending the
+        // code block and being recognized as its own separate construct.
+        const threshold = this.inIndentCode && this.indentCodeListCol != null ? this.indentCodeListCol + 4 : 4;
+        if (this.lineIndent >= threshold && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
           if (!this.inIndentCode) {
             this.closeBlock();
             const pre = this.dom.push('pre');
@@ -190,7 +199,18 @@ class MarkdownStreamer {
         }
         return;
       }
-      this.inIndentCode = false; this.pendingIndentNL = 0;
+      // An indented code block that was list-relative (indentCodeListCol)
+      // just ended (this line's indent fell below its trigger) — if it's
+      // STILL enough to belong to the item's own content column, this new
+      // construct (whatever decideBlock() below decides it is) belongs
+      // inside that <li> too, not at whatever level dom.current happens to
+      // be sitting (the <pre> from the code block just closed). Ascend
+      // back up to the <li> first so e.g. a blockquote here nests inside
+      // it instead of popping all the way out of the list.
+      if (this.inIndentCode && this.indentCodeListCol != null && this.lineIndent >= this.indentCodeListCol) {
+        this._ascendToLI();
+      }
+      this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
       if (this.pendingListBlank) {
         this.pendingListBlank = false;
         this._resolveListBlankContinuation(ch, true);
@@ -2121,7 +2141,7 @@ class MarkdownStreamer {
     if (this.dom.depth() > 1) this._popToBlockContainer();
     if (this.inTable) { this.inTable = false; this.tableHeadDone = false; this.inCell = false; this.tableColAlign = []; this.tableColIndex = 0; }
     this.inFootnoteDef = false;
-    this.inIndentCode = false; this.pendingIndentNL = 0;
+    this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
   }
 
   // Pops back to the nearest ancestor that can directly hold new block-level
@@ -2158,7 +2178,11 @@ class MarkdownStreamer {
     this._popMarkers();
     this.textNode = null;
     if (this.dom.currentTag() === 'P') this.dom.pop();
-    if (depth === 0 && this.dom.depth() > 1) this.dom.toRoot();
+    // Preserve a legitimate list-item nesting (this new blockquote belongs
+    // INSIDE it, e.g. as a block following indented code within the same
+    // <li>) — toRoot() unconditionally here would blow that away along
+    // with any genuinely stray nesting it's meant to clear.
+    if (depth === 0 && this.dom.depth() > 1 && this.dom.currentTag() !== 'LI') this.dom.toRoot();
     while (depth < level) { this.dom.push('blockquote'); depth++; }
     while (depth > level) {
       if (this.dom.currentTag() === 'P') this.dom.pop();
