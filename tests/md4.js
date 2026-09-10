@@ -405,7 +405,7 @@ class MarkdownStreamer {
     }
 
     if (this.atxLevel && this.textNode)
-      this.textNode.data = this.textNode.data.replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '').replace(/ +$/, '');
+      this.textNode.data = this.textNode.data.replace(/^#+\s*$/, '').replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '').replace(/ +$/, '');
     this.atxLevel = 0;
     this.textNode = null;
 
@@ -940,7 +940,13 @@ class MarkdownStreamer {
       } catch (e) { /* fall through to literal below */ }
     }
 
-    if (/^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]*$/.test(buf) || /^[^\s<>@]+@[^\s<>@]+$/.test(buf)) {
+    // CommonMark 6.9's email autolink grammar is much stricter than "any
+    // non-whitespace around an @" — no backslash, no unbalanced/invalid
+    // domain-label punctuation, etc. A buffered "<...>" that doesn't fit
+    // either real grammar (this one, or the URI scheme one above) is just
+    // literal angle-bracketed text, not an autolink.
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]*$/.test(buf)
+        || /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(buf)) {
       const a = document.createElement('a');
       const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(buf);
       a.href = this._encodeUrl(buf.includes('@') && !hasScheme ? 'mailto:' + buf : buf);
@@ -949,7 +955,15 @@ class MarkdownStreamer {
       this.prevCharWs = false; return;
     }
 
-    this.appendToTextNode('<' + buf + '>');
+    // Not a valid tag or autolink after all — just an ordinary "<", the
+    // buffered text, and ">". Only backslash-escape processing applies
+    // (e.g. "<foo\+@bar>" -> "<foo+@bar>the ">"); full inline reprocessing
+    // (emphasis, bare-URL autolinking, ...) does NOT apply here — this text
+    // was never seen char-by-char by the normal inline pipeline while
+    // buffered waiting for the closing ">", so replaying it through that
+    // pipeline now, out of its original streaming context, doesn't
+    // reproduce what char-by-char parsing would actually have done.
+    this.appendToTextNode('<' + buf.replace(/\\([!-/:-@[-`{-~])/g, '$1') + '>');
     this.prevCharWs = false;
   }
 

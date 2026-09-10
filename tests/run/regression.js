@@ -699,6 +699,20 @@ test("a fenced code block's content is dedented by the opening fence's own inden
   assert.strictEqual(render('  ```\naaa\n  aaa\naaa\n  ```\n'), '<pre><code>aaa\naaa\naaa\n</code></pre>');
 });
 
+test('an ATX heading with content that is ENTIRELY the closing "#" sequence renders empty', () => {
+  assert.strictEqual(render('### ###\n'), '<h3></h3>');
+});
+
+test('an email autolink with an invalid character (e.g. backslash) is not a valid autolink', () => {
+  // "<foo\+@bar.example.com>": CommonMark's email-autolink grammar has no
+  // backslash in it, so this was never a valid autolink at all — it falls
+  // back to literal "<...>" text, where the backslash escape (still
+  // processed for ordinary text, just not inside a real autolink) resolves
+  // "\+" to a literal "+".
+  const html = render('<foo' + String.fromCharCode(92) + '+@bar.example.com>\n');
+  assert.strictEqual(html, '<p>&lt;foo+@bar.example.com&gt;</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
