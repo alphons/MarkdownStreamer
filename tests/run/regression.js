@@ -861,6 +861,17 @@ test('an empty list marker cannot interrupt an already-open paragraph', () => {
   assert.strictEqual(render('foo\n*\n'), '<p>foo *</p>');
 });
 
+// ── Bracket backtracking: multiple stray "]" in one label ──────────────────
+test('extra closing brackets before the real one stay literal inside the label', () => {
+  const html = render('[link [foo [bar]]](/uri)\n');
+  assert.match(html, /<a[^>]*href="\/uri"[^>]*>link \[foo \[bar\]\]<\/a>/);
+});
+
+test('the same backtracking applies to image alt text', () => {
+  const html = render('![foo]]](/uri)\n');
+  assert.match(html, /<img[^>]*src="\/uri"[^>]*alt="foo\]\]"/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

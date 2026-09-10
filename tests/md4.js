@@ -1198,6 +1198,14 @@ class MarkdownStreamer {
       case 'img_expect_paren':
         if (ch === '(') { this.linkState = 'img_url'; this.urlBuf = ''; this._resetUrlParse(); }
         else if (ch === '[') { this.linkState = 'img_ref_id'; this.urlBuf = ''; }
+        else if (ch === ']') {
+          // Same "]]" backtrack as the non-image case: the PREVIOUS "]"
+          // wasn't really the alt text's end after all — it becomes
+          // literal, and this one gets a fresh chance.
+          this.linkBuf += ']';
+          this.linkState = 'img_alt';
+          this.onLinkChar(ch);
+        }
         else {
           // Shortcut reference form: ![alt] with no following (...)/[...] —
           // resolved against refDefs at finalize() (defs may come later).
@@ -1269,6 +1277,25 @@ class MarkdownStreamer {
       case 'expect_paren':
         if (ch === '(') { this.linkState = 'url'; this.urlBuf = ''; this._resetUrlParse(); }
         else if (ch === '[') { this.linkState = 'ref_id'; this.urlBuf = ''; }
+        else if (ch === ']') {
+          // "]]" or longer — the PREVIOUS "]" (the one that got us into
+          // this state) didn't actually close the label after all
+          // (nothing valid follows it), so IT becomes literal label
+          // content now — and THIS "]" gets a fresh chance to be the real
+          // closing bracket, by going back to label_open and immediately
+          // re-dispatching it there. A minimal, targeted piece of
+          // CommonMark's full bracket-matching algorithm (which in
+          // general also lets an even EARLIER unmatched "[" reclaim a
+          // position — not implemented — but this covers the common
+          // "multiple stray closing brackets in one label" case, e.g.
+          // "[link [foo [bar]]](/uri)"). The <a> is still open here
+          // (label_open's own "]" handling never closes it, only ends the
+          // label-accumulation phase), so the literal "]" just becomes
+          // ordinary label content.
+          this.appendToTextNode(']');
+          this.linkState = 'label_open';
+          this.onLinkChar(ch);
+        }
         else {
           const a = this.dom.find('A');
           if (a) { a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a); }
