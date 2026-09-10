@@ -831,6 +831,14 @@ test('an ordered list marker strips leading zeros from its start number', () => 
   assert.strictEqual(render('003. ok\n'), '<ol start="3"><li>ok</li></ol>');
 });
 
+test('a "-" immediately followed by a non-space, non-"-" character stays literal text, not truncated', () => {
+  assert.strictEqual(render('-one\n\n2.two\n'), '<p>-one</p><p>2.two</p>');
+});
+
+test('"-1." is not a valid list marker (bullet needs a following space) and stays literal', () => {
+  assert.strictEqual(render('-1. not ok\n'), '<p>-1. not ok</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

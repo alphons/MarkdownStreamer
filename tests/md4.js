@@ -644,7 +644,14 @@ class MarkdownStreamer {
           if (this.lastBlockEl?.tagName === 'P') {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, p[1] !== '-') : this._blockDefault(ch);
           }
-          return this.startHrWatch('-', 2, p[1] !== '-');
+          // "-" followed by neither a space nor another "-" can never
+          // become a valid list marker, thematic break, or setext
+          // underline — it's just literal text starting with "-", so
+          // fall back directly instead of routing through hrWatch with a
+          // hardcoded (and here, WRONG — only 1 real "-" was ever seen)
+          // dash count, which lost every character typed after it.
+          if (p[1] !== '-') { this._blockDefault(ch); return; }
+          return this.startHrWatch('-', 2, false);
         }
         if (p.length === 3) {
           if (p === '- -' || p === '- *') return;
