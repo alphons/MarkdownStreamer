@@ -2035,9 +2035,25 @@ class MarkdownStreamer {
       this.pushNewList(type, indent, marker, startNum, contentCol);
     } else {
       const top = this.listStack[this.listStack.length - 1];
-      if (indent > top.indent) {
+      // Nesting depends on the CONTENT column of the enclosing item, not
+      // just its marker's own indent — CommonMark: a new marker starts a
+      // deeper sub-list only once it reaches far enough in to be part of
+      // the current item's own content region. Using the marker indent
+      // alone (as a looser earlier version of this code did) nested a new
+      // level for every extra space of indentation between otherwise
+      // plainly-sibling items (e.g. "- a\n - b\n  - c\n" — one flat list).
+      if (indent >= top.contentCol) {
         this.pushNewList(type, indent, marker, startNum, contentCol);
       } else {
+        // Staying at (not nesting deeper than, and not dedenting out of)
+        // the current list level only requires reaching ITS marker's own
+        // indent, not its content column — contentCol is exclusively the
+        // "go one level deeper" threshold above. Popping levels here still
+        // compares against each level's marker indent for the same reason
+        // (using contentCol here, as a previous version of this fix did,
+        // wrongly popped an inner list back out to its parent for a
+        // same-level sibling whose indent fell short of the inner list's
+        // own contentCol, e.g. "- a\n  - b\n  - c\n").
         if (indent < top.indent) {
           while (this.listStack.length > 1 && this.listStack[this.listStack.length - 1].indent > indent) {
             this.listStack.pop();

@@ -872,6 +872,15 @@ test('the same backtracking applies to image alt text', () => {
   assert.match(html, /<img[^>]*src="\/uri"[^>]*alt="foo\]\]"/);
 });
 
+test('list items with slightly increasing indentation are still one flat list, not progressively nested', () => {
+  assert.strictEqual(render('- a\n - b\n  - c\n   - d\n'), '<ul><li>a</li><li>b</li><li>c</li><li>d</li></ul>');
+});
+
+test('two sibling items at the same nested level stay siblings, not popped back to the parent list', () => {
+  const html = render('- a\n  - b\n  - c\n\n- d\n  - e\n  - f\n');
+  assert.strictEqual(html, '<ul><li><p>a</p><ul><li>b</li><li>c</li></ul></li><li><p>d</p><ul><li>e</li><li>f</li></ul></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
