@@ -439,7 +439,7 @@ class MarkdownStreamer {
       } else if (p[0] === '*' && /^\*{3,}$/.test(p)) {
         this.makeHr();
       } else if (p[0] === '-' && /^-{3,}$/.test(p)) {
-        if (this.lastBlockEl?.tagName === 'P') this.resolveSetext('h2');
+        if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) this.resolveSetext('h2');
         else this.makeHr();
       } else if (/^[_ ]+$/.test(p) && (p.match(/_/g)||[]).length >= 3) {
         this.makeHr();
@@ -781,7 +781,7 @@ class MarkdownStreamer {
         if (p.length === 1) return;
         if (p.length === 2) {
           if (p[1] === ' ') return;
-          if (this.lastBlockEl?.tagName === 'P') {
+          if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, p[1] !== '-') : this._blockDefault(ch);
           }
           // "-" followed by neither a space nor another "-" can never
@@ -797,7 +797,7 @@ class MarkdownStreamer {
           if (p === '- -' || p === '- *') return;
           if (p[1] === ' ' && p[2] !== '-' && p[2] !== ' ') return this.openUlDecided(p[2], '-');
           if (p[1] === ' ' && p[2] === ' ') return;
-          if (this.lastBlockEl?.tagName === 'P') {
+          if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, false) : this._blockDefault(ch);
           }
           return this.startHrWatch('-', p.split('-').length - 1, false);
@@ -821,7 +821,7 @@ class MarkdownStreamer {
         this._blockDefault(ch); return;
 
       case '=':
-        if (this.lastBlockEl?.tagName === 'P' && this.lineIndent < 4) { this.startSetextWatch('=', p, ch !== '='); return; }
+        if (this.lastBlockEl?.tagName === 'P' && this.lineIndent < 4 && this._setextAllowed()) { this.startSetextWatch('=', p, ch !== '='); return; }
         this._blockDefault(ch); return;
 
       case '[': {
@@ -2240,6 +2240,17 @@ class MarkdownStreamer {
   // — used before treating a new marker as ending the current item, since
   // dom.current can be sitting several levels deeper inside it (a
   // continuation paragraph, a nested blockquote, ...) at that point.
+  // A setext underline can lazily continue an open paragraph — but NOT
+  // across a blockquote boundary: if that paragraph is inside a
+  // blockquote, the underline itself must ALSO be prefixed with ">" (i.e.
+  // we're currently replaying a ">"-led line's content, _inBlockquoteContent)
+  // for it to apply. An unprefixed line ends the quote instead (handled
+  // elsewhere) and gets evaluated fresh — most commonly as a thematic
+  // break, not a heading for the now-closed quoted paragraph.
+  _setextAllowed() {
+    return !this.dom.find('BLOCKQUOTE') || this._inBlockquoteContent;
+  }
+
   _ascendToLI() {
     while (!['LI', 'UL', 'OL'].includes(this.dom.currentTag()) && this.dom.current !== this.dom.bottomStack) {
       this.dom.pop();

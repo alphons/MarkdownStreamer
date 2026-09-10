@@ -943,6 +943,14 @@ test('a tab overshooting the indented-code trigger column keeps its leftover wid
   assert.strictEqual(render('- foo\n\n\t\tbar\n'), '<ul><li><p>foo</p><pre><code>  bar\n</code></pre></li></ul>');
 });
 
+test('an unprefixed setext underline after a quoted paragraph ends the quote as a thematic break, not a heading', () => {
+  assert.strictEqual(render('> Foo\n---\n'), '<blockquote><p>Foo</p></blockquote><hr>');
+});
+
+test('an unprefixed "=" underline after a quoted paragraph is just lazy-continuation text, not a heading', () => {
+  assert.strictEqual(render('> foo\nbar\n===\n'), '<blockquote><p>foo bar ===</p></blockquote>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
