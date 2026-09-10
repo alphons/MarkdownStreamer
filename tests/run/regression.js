@@ -1056,6 +1056,16 @@ test('listStack is trimmed when a block (HTML comment) closes outside the tracke
   assert.strictEqual(html, '<ul><li>foo</li><li>bar</li></ul><!-- --><ul><li>baz</li><li>bim</li></ul>');
 });
 
+test('a tight item nesting a sub-list directly under its own text keeps the source newline as a literal trailing text node', () => {
+  const html = render('- a\n  - b\n');
+  assert.strictEqual(html, '<ul><li>a\n<ul><li>b</li></ul></li></ul>');
+});
+
+test('that trailing newline is dropped once the item gets wrapped into <p> by a loose list', () => {
+  const html = render('- a\n  - b\n  - c\n\n- d\n  - e\n  - f\n');
+  assert.strictEqual(html, '<ul><li><p>a</p><ul><li>b</li><li>c</li></ul></li><li><p>d</p><ul><li>e</li><li>f</li></ul></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

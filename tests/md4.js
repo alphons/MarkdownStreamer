@@ -2545,6 +2545,18 @@ class MarkdownStreamer {
       // level for every extra space of indentation between otherwise
       // plainly-sibling items (e.g. "- a\n - b\n  - c\n" — one flat list).
       if (indent >= top.contentCol) {
+        // Nesting a new sub-list directly under the enclosing item's own
+        // text (no blank line separating them): the CommonMark source line
+        // ending right before the nested marker's line is a real newline
+        // character between the item's inline content and the nested list,
+        // which the spec's reference HTML preserves as a literal text node.
+        // Match that so whitespace-sensitive comparisons don't see a false
+        // difference between "a<ul>" and "a\n<ul>".
+        const cur = this.dom.currentTag() === 'LI' ? this.dom.current : null;
+        const last = cur && cur.lastChild;
+        if (last && last.nodeType === 3 && last.data && !/\s$/.test(last.data)) {
+          last.data += '\n';
+        }
         this.pushNewList(type, indent, marker, startNum, contentCol);
       } else {
         // Staying at (not nesting deeper than, and not dedenting out of)
@@ -2879,6 +2891,12 @@ class MarkdownStreamer {
         const p = document.createElement('p');
         li.insertBefore(p, leading[0]);
         for (const node of leading) p.appendChild(node);
+        // Wrapping into <p> supersedes the tight-item trailing newline
+        // openListItem() injects before a directly-nested sub-list (see
+        // there) — once this content is its own paragraph, no such
+        // newline belongs at its end.
+        const lastLeaf = p.lastChild;
+        if (lastLeaf && lastLeaf.nodeType === 3) lastLeaf.data = lastLeaf.data.replace(/\n$/, '');
       }
     });
   }
