@@ -935,6 +935,10 @@ test('a block that follows list-relative indented code stays nested inside the s
   assert.match(html, /<ol><li>.*<blockquote>.*<\/blockquote><\/li><\/ol>/s);
 });
 
+test('an empty list marker followed by a blank line stays empty forever — later indented content is a separate paragraph', () => {
+  assert.strictEqual(render('-\n\n  foo\n'), '<ul><li></li></ul><p>foo</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

@@ -493,7 +493,18 @@ class MarkdownStreamer {
     if (!this.blockDecided) {
       const tag = this.dom.currentTag();
       const li = this.dom.find('LI');
-      if (li && (tag === 'P' || tag === 'LI')) {
+      if (li && tag === 'LI' && this.pendingEmptyItem) {
+        // The list marker's own line had NO content at all, and this
+        // line is ALSO blank — CommonMark: such an item stays empty
+        // permanently; unlike an ordinary blank-line-then-indented-
+        // content continuation, indented content after a SECOND blank
+        // line does not belong to it. Finalize the (still empty) item
+        // now instead of arming pendingListBlank, which would otherwise
+        // let a later indented line join it as a second paragraph.
+        this.pendingEmptyItem = false;
+        this._flushEmphasis(this.dom.current); this.dom.pop();
+        this.textNode = null; this.lastBlockEl = null;
+      } else if (li && (tag === 'P' || tag === 'LI')) {
         // A blank line inside a list item doesn't necessarily end the list —
         // it might just separate this item's paragraphs, or separate this
         // item from the next one (which is what makes the whole list
