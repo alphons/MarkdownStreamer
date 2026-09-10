@@ -636,6 +636,18 @@ test('an inline "<...>" whose attributes lack proper leading whitespace is not a
   assert.strictEqual(render("<a href='bar'title=title>\n"), "<p>&lt;a href='bar'title=title&gt;</p>");
 });
 
+test('an autolink href percent-encodes unsafe characters like a normal link destination', () => {
+  const html = render('<https://example.com?find=\\*>\n');
+  assert.match(html, /href="https:\/\/example\.com\?find=%5C\*"/);
+  // the visible link TEXT stays verbatim — autolink content is never escaped
+  assert.match(html, />https:\/\/example\.com\?find=\\\*</);
+});
+
+test('a fenced code info string processes backslash escapes (e.g. "foo\\+bar" -> language "foo+bar")', () => {
+  const html = render('``` foo\\+bar\nfoo\n```\n');
+  assert.match(html, /class="language-foo\+bar"/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

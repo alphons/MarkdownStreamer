@@ -926,7 +926,7 @@ class MarkdownStreamer {
     if (/^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]*$/.test(buf) || /^[^\s<>@]+@[^\s<>@]+$/.test(buf)) {
       const a = document.createElement('a');
       const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(buf);
-      a.href = buf.includes('@') && !hasScheme ? 'mailto:' + buf : buf;
+      a.href = this._encodeUrl(buf.includes('@') && !hasScheme ? 'mailto:' + buf : buf);
       this.initAnchor(a); a.appendChild(document.createTextNode(buf));
       this.dom.current.appendChild(a); this.textNode = null;
       this.prevCharWs = false; return;
@@ -1387,7 +1387,10 @@ class MarkdownStreamer {
   // ── Code fence ─────────────────────────────────────────────────────────────
   onCodeFenceNewline() {
     if (!this.dom.find('PRE')) {
-      const lang = (this.fencePrefix || '').trim().split(/\s+/)[0];
+      // The info string is subject to backslash-escape processing, same as
+      // regular inline text (e.g. "```foo\+bar" -> language "foo+bar").
+      const lang = (this.fencePrefix || '').trim().split(/\s+/)[0]
+        .replace(/\\([!-/:-@[-`{-~])/g, '$1');
       this.fencePrefix = null;
       const pre = this.dom.push('pre');
       const code = document.createElement('code');
