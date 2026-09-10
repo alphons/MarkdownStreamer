@@ -799,6 +799,25 @@ test('a "[" while already inside an open link label never creates an invalid nes
   assert.ok(!/<a[^>]*>[^<]*<a/.test(html), 'must not nest <a> inside <a>: ' + html);
 });
 
+// ── HTML block type 7 (CommonMark 4.6) ──────────────────────────────────────
+test('a complete tag alone on its line, with a name not in the type-6 list, is an HTML block', () => {
+  const html = render('<a href="foo">\n*bar*\n</a>\n');
+  assert.strictEqual(html, '<a href="foo">\n*bar*\n</a>');
+});
+
+test('type 7 cannot interrupt an already-open paragraph', () => {
+  // "<kbd>" isn't alone on the line (there's more before/after it), so this
+  // must stay ordinary inline content, not attempt an HTML block at all.
+  const html = render('<kbd>x</kbd>');
+  assert.match(html, /<kbd>x<\/kbd>/);
+});
+
+test('type 7 ends at the next blank line, leaving later content as normal markdown', () => {
+  const html = render('<del>\n\n*foo*\n\n</del>\n');
+  assert.match(html, /<del><\/del>/);
+  assert.match(html, /<em>foo<\/em>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

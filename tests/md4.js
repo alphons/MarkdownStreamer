@@ -341,6 +341,13 @@ class MarkdownStreamer {
         this.makeHr();
       } else if (p[0] === '-' && /^- /.test(p)) {
         this.openUlDecided(p.slice(2), '-');
+      } else if (p[0] === '<' && !['P', 'LI', 'DD'].includes(contTag) && this._isCompleteType7Line(p)) {
+        // Type 7 HTML block: the whole line is one complete tag, alone —
+        // decideBlock()'s own "<" case deferred this exact decision here,
+        // once the whole line (and the fact that nothing else follows the
+        // tag but whitespace) is actually known.
+        this._startHtmlBlock('blank', null);
+        this.rawHtmlBuf += '\n'; this.rawHtmlLineBuf = '';
       } else if (/^#{1,6}$/.test(p)) {
         // A bare "#".."######" alone on a line (no trailing space, but also
         // no more content before the newline) is still a valid — empty —
@@ -716,6 +723,15 @@ class MarkdownStreamer {
           if (HTML_BLOCK1_TAGS.has(name)) { this._startHtmlBlock('tag', name); return; } // type 1
           if (HTML_BLOCK6_TAGS.has(name)) { this._startHtmlBlock('blank', null); return; } // type 6
         }
+        // Type 7: not a recognized block-level tag name, but this line
+        // could still turn out to be "a complete open or closing tag,
+        // alone on its line" (any tag name) — can't tell until the WHOLE
+        // line is seen (nothing else may follow but whitespace), so keep
+        // waiting rather than deciding now, UNLESS already inside an open
+        // paragraph/list-item/definition: unlike types 1-6, type 7 cannot
+        // interrupt one. onNewline()'s undecided-line handling makes the
+        // actual call once the line is complete (_isCompleteType7Line()).
+        if (!['P', 'LI', 'DD'].includes(this.dom.currentTag())) return;
         this._blockDefault(ch); return;
       }
 
@@ -1013,6 +1029,16 @@ class MarkdownStreamer {
       rest = rest.slice(am[0].length);
     }
     return true;
+  }
+
+  // HTML block type 7 (CommonMark 4.6): true if the whole line (already
+  // known to start with "<") is nothing but ONE complete open or closing
+  // tag, optionally followed by trailing whitespace — reuses the same
+  // open-tag grammar already used for inline "<...>" validation.
+  _isCompleteType7Line(p) {
+    if (/^<\/[a-zA-Z][a-zA-Z0-9-]*\s*>\s*$/.test(p)) return true; // closing tag
+    const m = p.match(/^<([a-zA-Z][a-zA-Z0-9-]*[\s\S]*?)>\s*$/);
+    return !!m && this._isValidOpenTagBody(m[1]);
   }
 
   // Classifies and applies a buffered "<...>" span once its closing '>' is
@@ -2055,6 +2081,15 @@ class MarkdownStreamer {
   }
 
   finalize() {
+    // If the input doesn't end with a trailing newline, a line whose block
+    // type can only be decided at end-of-line (e.g. a thematic break, or
+    // the type-7 HTML-block check above) never gets that decision made —
+    // onNewline() itself is only ever triggered by an actual "\n" char.
+    // Synthesize that final line ending here, same as onNewline() would
+    // handle it, before any of finalize()'s own (inline-level) cleanup —
+    // none of which applies yet if the block type isn't even decided.
+    if (!this.blockDecided && this.pending) this.onNewline();
+
     // Same as onNewline()'s handling: a counted closing-backtick run is only
     // confirmed once a following character rules out a longer run — one
     // right at the very end of the input (no trailing newline either) never
