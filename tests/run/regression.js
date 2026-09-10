@@ -973,6 +973,31 @@ test('extra spaces buffered together with the first content character are absorb
   assert.strictEqual(render('-  foo\n\n   bar\n'), '<ul><li><p>foo</p><p>bar</p></li></ul>');
 });
 
+// ── Same-line block nesting right after a list marker ───────────────────────
+// A list item's first content, right after its marker, is now replayed
+// through decideBlock() (same pattern already used for blockquote content)
+// so it can itself start a NESTED block — a marker, heading, etc. — instead
+// of always being forced straight into the item as inline text.
+test('a list marker immediately followed by another marker nests a sub-list', () => {
+  assert.strictEqual(render('- - foo\n'), '<ul><li><ul><li>foo</li></ul></li></ul>');
+});
+
+test('marker, sub-list, and a further-nested ordered list all on one line', () => {
+  assert.strictEqual(render('1. - 2. foo\n'), '<ol><li><ul><li><ol start="2"><li>foo</li></ol></li></ul></li></ol>');
+});
+
+test('an ATX heading right after a list marker nests inside the item', () => {
+  assert.strictEqual(render('- # Foo\n'), '<ul><li><h1>Foo</h1></li></ul>');
+});
+
+test('an ATX heading on its OWN line after list content still ends the list normally', () => {
+  assert.strictEqual(render('- foo\n# bar\n'), '<ul><li>foo</li></ul><h1>bar</h1>');
+});
+
+test('ordinary sibling list items still have no stray leading space (regression guard)', () => {
+  assert.strictEqual(render('- one\n- two\n'), '<ul><li>one</li><li>two</li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

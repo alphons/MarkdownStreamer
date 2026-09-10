@@ -275,6 +275,18 @@ class MarkdownStreamer {
         return;
       }
       this.liAbsorb = null;
+      // The first real content character right after a list marker (and
+      // its absorbed spaces) — same reasoning as openUlDecided()'s mixed-
+      // buffer case just above: give it a chance to itself start a NESTED
+      // block via decideBlock(), rather than always forcing it straight in
+      // as this item's literal/inline text. liAbsorb is only ever set
+      // right when a list item opens, so reaching this point always means
+      // exactly that context.
+      this.pending = ''; this.blockDecided = false;
+      this.lineIndent = a.top.contentCol; // see openUlDecided()'s matching comment
+      this.needsJoinSpace = false; // same reasoning: nothing to join yet
+      this.decideBlock(ch);
+      return;
     }
 
     if (ch === ' ') this.trailingSpaces++;
@@ -723,7 +735,16 @@ class MarkdownStreamer {
         if (ch === '#' && p.length <= 6) return;
         if ((ch === ' ' || ch === '\t') && p.length >= 2 && /^#{1,6}$/.test(p.slice(0,-1))) {
           const level = p.length - 1;
-          this.closeBlock(); this.listStack = [];
+          // Nested directly inside a list item via that item's own first-
+          // content replay (e.g. "- # Foo" — see openUlDecided()/liAbsorb)
+          // — the <li> is freshly opened and still completely empty,
+          // nothing to close, and the enclosing list is still legitimately
+          // open; don't touch it, unlike the ordinary case (e.g. "- foo\n
+          // # bar\n", where dom.current is ALSO 'LI' — a tight item's text
+          // goes straight in with no <p> wrapper — but with real content
+          // already in it, meaning the heading genuinely ends the list).
+          const freshInLI = this.dom.currentTag() === 'LI' && this.dom.current.childNodes.length === 0;
+          if (!freshInLI) { this.closeBlock(); this.listStack = []; }
           const h = this.dom.push('h' + Math.min(level, 6)); this.lastBlockEl = h;
           this._bd(); this.atxLevel = level; this.atxSkipLeadingSpace = true; return;
         }
@@ -2034,8 +2055,35 @@ class MarkdownStreamer {
     this.openListItem('ul', this.lineIndent, marker, undefined, contentCol);
     this._bd();
     if (!isAllSpaces) {
+      // Replay the item's own first content through decideBlock() itself
+      // (not straight to inline text) — same reasoning, and same pattern,
+      // as case '>' already uses for blockquote content: this line's
+      // content right after the marker might itself start a NESTED block
+      // (another list marker, an ATX heading, a fence, a blockquote, ...),
+      // e.g. "- - foo" or "- # Foo", not just be this item's inline text.
       const rest = s.slice(leadWsMatch.length);
-      for (const c of rest) { this.onInlineChar(c); this.lastChar = c; }
+      this.pending = ''; this.blockDecided = false;
+      // A nested marker recognized here needs its OWN indent measured
+      // from where `rest` actually starts (contentCol) — not the stale
+      // outer line's this.lineIndent (leading whitespace BEFORE the
+      // parent marker, e.g. 0 for "- - foo") — or openListItem() sees it
+      // as a sibling of the OUTER item instead of nested one level deeper.
+      this.lineIndent = contentCol;
+      // This item's very first character has nothing to join a soft break
+      // to yet — needsJoinSpace may still be sitting true from whatever
+      // ended the PREVIOUS item/block, and _blockDefault() would otherwise
+      // apply it as a spurious leading space in front of this new item's
+      // content.
+      this.needsJoinSpace = false;
+      for (const c of rest) {
+        if (this.blockDecided) {
+          if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
+          this.onContentChar(c);
+        } else {
+          this.decideBlock(c);
+        }
+        this.lastChar = c;
+      }
       return;
     }
     const top = this.listStack[this.listStack.length - 1];
