@@ -102,6 +102,9 @@ class MarkdownStreamer {
     this.pendingListBlank = false; // NOT reset in resetLine(): set at the end of
     // a blank line (after resetLine already ran for it) and consumed at the
     // start of the NEXT line, so it must survive the resetLine() in between.
+    this.pendingEmptyItem = false; // same idea, for a list marker with no
+    // content on its own line (e.g. "-\n") — the NEXT line decides whether
+    // it's this (tight) item's content or something else entirely.
     this._blankBeforeNewItem = false;
   }
 
@@ -190,7 +193,12 @@ class MarkdownStreamer {
       this.inIndentCode = false; this.pendingIndentNL = 0;
       if (this.pendingListBlank) {
         this.pendingListBlank = false;
-        this._resolveListBlankContinuation(ch);
+        this._resolveListBlankContinuation(ch, true);
+        return;
+      }
+      if (this.pendingEmptyItem) {
+        this.pendingEmptyItem = false;
+        this._resolveListBlankContinuation(ch, false);
         return;
       }
       this.decideBlock(ch); return;
@@ -233,6 +241,21 @@ class MarkdownStreamer {
     // otherwise only ever see the reset value, never the real one.
     this.hadJoinSpace = this.needsJoinSpace;
     this.needsJoinSpace = false;
+
+    // A list item's marker was followed only by more whitespace, nothing
+    // else, all the way to end of line (this.liAbsorb — set when the
+    // marker's trailing spaces started absorbing, cleared the moment any
+    // REAL content char arrives — is still set here only if that never
+    // happened). Per CommonMark 5.2, a marker line with nothing but
+    // trailing whitespace after it is treated exactly like an empty
+    // marker with NO trailing spaces at all: content column snaps back to
+    // right after the marker's single required space, regardless of how
+    // many blank spaces actually followed it.
+    if (this.liAbsorb) {
+      this.liAbsorb.top.contentCol = this.liAbsorb.base;
+      this.liAbsorb = null;
+      this.pendingEmptyItem = true;
+    }
 
     // A still-pending backtick run (e.g. the line ends right after "``",
     // with no following character to resolve it yet) needs resolving
@@ -362,6 +385,19 @@ class MarkdownStreamer {
         this.makeHr();
       } else if (p[0] === '-' && /^- /.test(p)) {
         this.openUlDecided(p.slice(2), '-');
+      } else if (/^[-*+]$/.test(p) && contTag !== 'P') {
+        // A bullet marker alone on its line, nothing after it — still a
+        // valid (empty, for now) list item; the content column is as if
+        // followed by exactly one space (CommonMark 5.2), and whatever the
+        // NEXT line turns out to be decides if this item gets real content
+        // or stays empty (see pendingEmptyItem in processChar()). Cannot
+        // interrupt an already-open paragraph (CommonMark 5.2) — that case
+        // falls through to the ordinary lazy-continuation fallback below.
+        this.openListItem('ul', this.lineIndent, p, undefined, this.lineIndent + 2);
+        this._bd(); this.pendingEmptyItem = true;
+      } else if (/^[0-9]{1,9}[.)]$/.test(p) && contTag !== 'P') {
+        this.openListItem('ol', this.lineIndent, p[p.length - 1], parseInt(p.slice(0, -1), 10), this.lineIndent + p.length + 1);
+        this._bd(); this.pendingEmptyItem = true;
       } else if (p[0] === '<' && !['P', 'LI', 'DD'].includes(contTag) && this._isCompleteType7Line(p)) {
         // Type 7 HTML block: the whole line is one complete tag, alone —
         // decideBlock()'s own "<" case deferred this exact decision here,
@@ -2018,14 +2054,29 @@ class MarkdownStreamer {
   // the list (that content ends up going through _blockDefault(), sees
   // dom.currentTag() is no longer P/LI/DD, and calls fallbackToParagraph(),
   // which is what actually clears listStack once the list is genuinely done).
-  _resolveListBlankContinuation(ch) {
+  // `fromBlank`: true when a genuine blank line separated the marker/prior
+  // content from this line (the pendingListBlank path — makes the list
+  // loose, and this becomes a SECOND paragraph); false when this is the
+  // very next line right after a list marker with no content of its own
+  // (e.g. "-\n" — the pendingEmptyItem path) — that item stays tight, and
+  // this is simply its (first and only) content, not a second block.
+  _resolveListBlankContinuation(ch, fromBlank) {
     const top = this.listStack[this.listStack.length - 1];
     if (top && this.lineIndent >= top.contentCol) {
-      // A second paragraph within the same item: this blank line genuinely
-      // separates two blocks that are both part of the list, so it's loose.
-      this._markListLoose(top);
       this.lineIndent = 0; this.leadingWsChars = 0;
-      this.openParagraph();
+      if (fromBlank) {
+        // A second paragraph within the same item: this blank line
+        // genuinely separates two blocks that are both part of the list,
+        // so it's loose.
+        this._markListLoose(top);
+        this.openParagraph();
+      } else {
+        // This is the item's very FIRST content (an empty-marker line has
+        // no prior content to join to) — onNewline()'s generic end-of-line
+        // bookkeeping set needsJoinSpace=true merely because dom.current
+        // was sitting at the (as yet empty) <li>; not a real soft break.
+        this.needsJoinSpace = false;
+      }
       this.decideBlock(ch);
       return;
     }
@@ -2033,8 +2084,10 @@ class MarkdownStreamer {
     this.lastBlockEl = null;
     // Not (yet) known whether this dedents fully out of the list or is a new
     // sibling item — openListItem() marks looseness itself if it turns out
-    // to be the latter, reusing the same list.
-    this._blankBeforeNewItem = true;
+    // to be the latter, reusing the same list. Only a genuine blank line
+    // can make that new item loose — an empty-marker item followed
+    // immediately (no blank line) by a dedented new marker does not.
+    this._blankBeforeNewItem = fromBlank;
     this.decideBlock(ch);
   }
 

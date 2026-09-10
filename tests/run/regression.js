@@ -839,6 +839,28 @@ test('"-1." is not a valid list marker (bullet needs a following space) and stay
   assert.strictEqual(render('-1. not ok\n'), '<p>-1. not ok</p>');
 });
 
+// ── Empty list items (CommonMark 5.2: a marker with no content) ────────────
+test('a bullet marker alone on its line is a valid, empty list item', () => {
+  assert.strictEqual(render('*\n'), '<ul><li></li></ul>');
+});
+
+test('an empty-marker item followed by an indented line becomes that (tight) content', () => {
+  assert.strictEqual(render('-\n  foo\n'), '<ul><li>foo</li></ul>');
+});
+
+test('a marker followed only by trailing whitespace (no real content) behaves the same as one with none at all', () => {
+  assert.strictEqual(render('-   \n  foo\n'), '<ul><li>foo</li></ul>');
+});
+
+test('consecutive empty and non-empty items in the same list all resolve correctly', () => {
+  assert.strictEqual(render('- foo\n-\n- bar\n'), '<ul><li>foo</li><li></li><li>bar</li></ul>');
+  assert.strictEqual(render('1. foo\n2.\n3. bar\n'), '<ol><li>foo</li><li></li><li>bar</li></ol>');
+});
+
+test('an empty list marker cannot interrupt an already-open paragraph', () => {
+  assert.strictEqual(render('foo\n*\n'), '<p>foo *</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
