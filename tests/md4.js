@@ -431,6 +431,19 @@ class MarkdownStreamer {
       } else if (/^[0-9]{1,9}[.)]$/.test(p) && contTag !== 'P') {
         this.openListItem('ol', this.lineIndent, p[p.length - 1], parseInt(p.slice(0, -1), 10), this.lineIndent + p.length + 1);
         this._bd(); this.pendingEmptyItem = true;
+      } else if (/^<\/?[a-zA-Z][a-zA-Z0-9-]*$/.test(p)) {
+        // decideBlock()'s "<" case waits for one more character once the
+        // tag name exactly fills `p` (greedy name-matching means that's
+        // the only way to be SURE the name is complete) — but if the line
+        // ends right there (e.g. "<style\n", the ">" arriving on a LATER
+        // line), that confirming character is a newline, which bypasses
+        // decideBlock() entirely. Resolve it here the same way once the
+        // whole line — just the tag name, nothing else — is known.
+        const name = p.slice(p[1] === '/' ? 2 : 1).toLowerCase();
+        if (HTML_BLOCK1_TAGS.has(name)) this._startHtmlBlock('tag', name);
+        else if (HTML_BLOCK6_TAGS.has(name)) this._startHtmlBlock('blank', null);
+        else this._continueOrFallback();
+        if (this.inRawHtml) { this.rawHtmlBuf += '\n'; this.rawHtmlLineBuf = ''; }
       } else if (p[0] === '<' && !['P', 'LI', 'DD'].includes(contTag) && this._isCompleteType7Line(p)) {
         // Type 7 HTML block: the whole line is one complete tag, alone —
         // decideBlock()'s own "<" case deferred this exact decision here,

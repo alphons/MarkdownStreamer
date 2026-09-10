@@ -918,6 +918,12 @@ test('of two duplicate reference definitions, the first one wins', () => {
   assert.match(html, /href="first"/);
 });
 
+test('an HTML block tag name immediately followed by a newline (">" on a later line) is still recognized', () => {
+  const html = render('<style\n  type="text/css">\nh1 {color:red;}\n\np {color:blue;}\n</style>\nokay\n');
+  assert.match(html, /<style\s+type="text\/css">/);
+  assert.match(html, /<p>okay<\/p>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
