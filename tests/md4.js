@@ -58,10 +58,16 @@ class DomStack {
 
 // ─── MarkdownStreamer ──────────────────────────────────────────────────────────
 class MarkdownStreamer {
-  constructor(rootEl) {
+  // opts.commonMarkStrict (default false): CommonMark says "__x__" means
+  // <strong> — the same as "**x**". This tool deliberately renders it as
+  // <u> (underline) instead, since Markdown has no standard underline
+  // syntax otherwise; set this to true to opt into the spec-compliant
+  // <strong> behavior for "__" (e.g. for CommonMark conformance testing).
+  constructor(rootEl, opts = {}) {
     rootEl.innerHTML = '';
     this.root = rootEl;
     this.dom  = new DomStack(rootEl);
+    this.commonMarkStrict = !!opts.commonMarkStrict;
 
     this.linePos = 0; this.lineIndent = 0; this.leadingWsChars = 0; this.blockDecided = false;
     this.pending = ''; this.lastBlockEl = null; this.lineStart = true;
@@ -1161,7 +1167,8 @@ class MarkdownStreamer {
 
   markerToTag(marker) {
     if (marker[0] === '`') return 'code'; // any-length backtick run opens a code span
-    return {'**':'strong','*':'em','__':'u','_':'em','~~':'s','^':'sup','~':'sub','==':'mark'}[marker] || null;
+    if (marker === '__') return this.commonMarkStrict ? 'strong' : 'u';
+    return {'**':'strong','*':'em','_':'em','~~':'s','^':'sup','~':'sub','==':'mark'}[marker] || null;
   }
 
   findInlineClose(marker) {

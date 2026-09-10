@@ -25,10 +25,12 @@ function loadMarkdownStreamer() {
 }
 
 // Renders markdown -> innerHTML using the synchronous (non-streaming) API.
-function render(markdown) {
+// `opts` is passed straight through to the MarkdownStreamer constructor
+// (e.g. { commonMarkStrict: true } for "__" -> <strong> instead of <u>).
+function render(markdown, opts) {
   const { MarkdownStreamer, document } = loadMarkdownStreamer();
   const el = document.getElementById('output');
-  const streamer = new MarkdownStreamer(el);
+  const streamer = new MarkdownStreamer(el, opts);
   streamer.markdown(markdown);
   streamer.finalize();
   return el.innerHTML;

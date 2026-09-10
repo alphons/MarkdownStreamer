@@ -566,6 +566,18 @@ test('an HTML comment inside a paragraph does not vanish (processing-instruction
   assert.match(render('<!ELEMENT br EMPTY>\n'), /ELEMENT br EMPTY/);
 });
 
+// ── "__" underline vs CommonMark <strong> (opt-in via commonMarkStrict) ───
+test('by default, "__text__" renders as <u> (underline), not <strong>', () => {
+  assert.match(render('__foo bar__\n'), /<u>foo bar<\/u>/);
+  assert.doesNotMatch(render('__foo bar__\n'), /<strong>/);
+});
+
+test('with commonMarkStrict, "__text__" renders as <strong> per the CommonMark spec', () => {
+  const html = render('__foo bar__\n', { commonMarkStrict: true });
+  assert.match(html, /<strong>foo bar<\/strong>/);
+  assert.doesNotMatch(html, /<u>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

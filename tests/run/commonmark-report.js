@@ -8,6 +8,11 @@
 // places (e.g. no full reference-link edge cases, simplified list-item
 // lazy-continuation rules). Use this report to see the current baseline
 // and to notice when a change moves the score sharply in either direction.
+//
+// Rendered with { commonMarkStrict: true } so "__x__" scores as <strong>
+// (the CommonMark-mandated meaning) rather than md4.js's default <u>
+// (underline) — an intentional, documented deviation the tool keeps by
+// default in normal use (see the constructor's opts.commonMarkStrict).
 const { render } = require('./render');
 const cases = require('./commonmark-spec.json');
 
@@ -54,7 +59,7 @@ for (const c of cases) {
   let actual;
   let error = null;
   try {
-    actual = render(c.markdown);
+    actual = render(c.markdown, { commonMarkStrict: true });
   } catch (err) {
     actual = '';
     error = err;
