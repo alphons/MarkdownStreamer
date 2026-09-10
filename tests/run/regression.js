@@ -1046,6 +1046,11 @@ test('a blockquote after a blank line inside a list item stays nested', () => {
   assert.strictEqual(html, '<ul><li><p>Item</p><blockquote><p>A quote continues</p></blockquote></li><li><p>Next</p></li></ul>');
 });
 
+test('a fence as a list marker\'s own first content (same line) stays nested inside the item', () => {
+  const html = render('1. ```\n   foo\n   ```\n\n   bar\n');
+  assert.strictEqual(html, '<ol><li><pre><code>foo\n</code></pre><p>bar</p></li></ol>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

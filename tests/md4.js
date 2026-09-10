@@ -298,6 +298,7 @@ class MarkdownStreamer {
       this.pending = ''; this.blockDecided = false;
       this.lineIndent = a.top.contentCol; // see openUlDecided()'s matching comment
       this.needsJoinSpace = false; // same reasoning: nothing to join yet
+      this._inListContinuation = true; // see openUlDecided()'s matching comment
       this.decideBlock(ch);
       return;
     }
@@ -2169,6 +2170,11 @@ class MarkdownStreamer {
       // apply it as a spurious leading space in front of this new item's
       // content.
       this.needsJoinSpace = false;
+      // Whatever decideBlock() opens here (a fence, blockquote, ...) must
+      // stay nested inside THIS <li>, not get popped out by closeBlock()'s
+      // _popToBlockContainer() — same _inListContinuation guard used for a
+      // list item's SECOND block (_resolveListBlankContinuation()).
+      this._inListContinuation = true;
       for (const c of rest) {
         if (this.blockDecided) {
           if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
