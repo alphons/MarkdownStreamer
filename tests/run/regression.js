@@ -887,6 +887,11 @@ test('a new sibling list item after a blank-line continuation paragraph never ne
   assert.strictEqual(html, '<ul><li><p>a</p></li><li><p>b</p><p>c</p></li><li><p>d</p></li></ul>');
 });
 
+test('a link reference definition cannot interrupt an already-open paragraph', () => {
+  const html = render('Foo\n[bar]: /baz\n\n[bar]\n');
+  assert.strictEqual(html, '<p>Foo [bar]: /baz</p><p>[bar]</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

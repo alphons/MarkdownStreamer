@@ -740,8 +740,11 @@ class MarkdownStreamer {
           if (!p.includes(']') || p[p.length - 1] === ']') return;
           this._blockDefault(ch); return;
         }
-        // Reference link definition [label]:
+        // Reference link definition [label]: — cannot interrupt an
+        // already-open paragraph (CommonMark 4.7), same restriction as
+        // type-7 HTML blocks and an empty list marker.
         if (!p[1]) return;
+        if (['P', 'LI', 'DD'].includes(this.dom.currentTag())) { this._blockDefault(ch); return; }
         const ci = p.indexOf(']:');
         if (ci > 1) { this.defPending = { type: 'ref', key: p.slice(1, ci).toLowerCase(), value: '' }; this._bd(); return; }
         if (!p.includes(']') || p[p.length - 1] === ']') return;
