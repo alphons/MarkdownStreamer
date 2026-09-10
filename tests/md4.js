@@ -867,11 +867,31 @@ class MarkdownStreamer {
         }
         // Reference link definition [label]: — cannot interrupt an
         // already-open paragraph (CommonMark 4.7), same restriction as
-        // type-7 HTML blocks and an empty list marker.
+        // type-7 HTML blocks and an empty list marker. A freshly-opened,
+        // still-EMPTY <p> doesn't count as "already open" here — that's
+        // exactly the shape _resolveListBlankContinuation() leaves behind
+        // right before replaying a list item's second-paragraph content
+        // through decideBlock(), and a definition there is perfectly
+        // valid (e.g. "- a\n- b\n\n  [ref]: /url\n- d\n").
         if (!p[1]) return;
-        if (['P', 'LI', 'DD'].includes(this.dom.currentTag())) { this._blockDefault(ch); return; }
+        {
+          const curTag = this.dom.currentTag();
+          const cannotInterrupt = curTag === 'LI' || curTag === 'DD'
+            || (curTag === 'P' && this.dom.current.childNodes.length > 0);
+          if (cannotInterrupt) { this._blockDefault(ch); return; }
+        }
         const ci = p.indexOf(']:');
         if (ci > 1) {
+          // A definition produces no visible content of its own — if it's
+          // starting inside a still-empty <p> (see the childNodes check
+          // above), that <p> was only ever a placeholder for content that
+          // never actually arrived; remove it rather than leaving a stray
+          // empty element behind.
+          if (this.dom.currentTag() === 'P' && this.dom.current.childNodes.length === 0) {
+            const emptyP = this.dom.current;
+            this.dom.pop();
+            emptyP.remove();
+          }
           this.defPending = {
             type: 'ref', key: p.slice(1, ci).toLowerCase(),
             phase: 'dest', dest: '', title: null, titleQuote: null,

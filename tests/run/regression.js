@@ -955,6 +955,10 @@ test('a 4+ indented list marker after an unprefixed line inside a blockquote is 
   assert.strictEqual(render('> foo\n    - bar\n'), '<blockquote><p>foo - bar</p></blockquote>');
 });
 
+test('a link reference definition inside a list item is consumed silently, without a stray empty <p>', () => {
+  assert.strictEqual(render('- a\n- b\n\n  [ref]: /url\n- d\n'), '<ul><li><p>a</p></li><li><p>b</p></li><li><p>d</p></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
