@@ -290,12 +290,15 @@ class MarkdownStreamer {
         // this blank line does NOT make it loose. Stay positioned at the LI;
         // _resolveListBlankContinuation (called for the next line) decides
         // which case this is, and marks looseness only when warranted.
+        this._flushEmphasis(this.dom.current);
         if (tag === 'P') this.dom.pop();
         this.textNode = null; this.lastBlockEl = null;
         this.pendingListBlank = true;
       } else if (tag === 'P') {
+        this._flushEmphasis(this.dom.current);
         this.dom.pop(); this.textNode = null; this.lastBlockEl = null;
       } else if (tag === 'DD') {
+        this._flushEmphasis(this.dom.current);
         this.dom.toRoot(); this.textNode = null; this.lastBlockEl = null;
       }
       this.resetLine(); return;
@@ -1115,6 +1118,89 @@ class MarkdownStreamer {
     return { canOpen: left, canClose: right };
   }
 
+  // ── Emphasis resolution, DOM-native (no out-of-DOM buffer) ─────────────────
+  // A "*"/"_" delimiter run that can close first tries to match immediately
+  // against the nearest still-open compatible run — found by walking real
+  // DOM siblings backward, not a parallel data structure — so the ordinary,
+  // well-formed case (e.g. typing "*foo*") resolves and renders live, same
+  // as before. A run (or its leftover length after a partial match) that
+  // can't be matched right now becomes a placeholder Comment node — metadata
+  // stored directly on it (._emBase/._emLen/._emCanOpen/._emCanClose), the
+  // same pattern already used for real elements via _mdMarker — invisible
+  // until it's either matched by a LATER closer (still live, no deferral)
+  // or the block containing it is finalized, at which point any leftover
+  // placeholders are swept to literal text by _flushEmphasis().
+  _pushDelim(marker, baseChar, canOpen, canClose) {
+    let len = marker.length;
+    if (canClose) {
+      while (len > 0) {
+        const opener = this._findOpenerSibling(baseChar, len, canOpen);
+        if (!opener) break;
+        const use = Math.min(2, opener._emLen, len);
+        let tag = use === 2 ? 'strong' : 'em';
+        if (use === 2 && baseChar === '_' && !this.commonMarkStrict) tag = 'u'; // see markerToTag()
+        this._wrapDelimRange(opener, tag);
+        opener._emLen -= use; len -= use;
+        if (opener._emLen <= 0) opener.remove();
+      }
+    }
+    if (len > 0) {
+      if (canOpen) {
+        const node = document.createComment('em');
+        node._emBase = baseChar; node._emLen = len; node._emCanOpen = canOpen; node._emCanClose = canClose;
+        this.dom.current.appendChild(node);
+      } else {
+        this.writeText(baseChar.repeat(len));
+      }
+    }
+    this.textNode = null;
+  }
+
+  // Walks DIRECT children of dom.current backward (real siblings, not a
+  // buffer) for the nearest still-open run that could pair with a closer of
+  // `closerLen`/`closerCanOpen` — applying the "multiple of 3" rule (6.2
+  // rules 9/10): if either side can both open and close, and the two
+  // lengths sum to a multiple of 3, the pairing is only valid if BOTH
+  // lengths individually are also multiples of 3.
+  _findOpenerSibling(baseChar, closerLen, closerCanOpen) {
+    for (let n = this.dom.current.lastChild; n; n = n.previousSibling) {
+      if (n.nodeType !== 8 || n._emBase !== baseChar || !n._emCanOpen || n._emLen <= 0) continue;
+      if (n._emCanClose || closerCanOpen) {
+        const sum = n._emLen + closerLen;
+        if (sum % 3 === 0 && (n._emLen % 3 !== 0 || closerLen % 3 !== 0)) continue;
+      }
+      return n;
+    }
+    return null;
+  }
+
+  // Wraps everything between `openerNode` and the current end of its parent
+  // (i.e. everything typed since the opener) in a new <em>/<strong> element.
+  _wrapDelimRange(openerNode, tag) {
+    const el = document.createElement(tag);
+    openerNode.parentNode.insertBefore(el, openerNode.nextSibling);
+    let n = el.nextSibling;
+    while (n) { const next = n.nextSibling; el.appendChild(n); n = next; }
+    this.textNode = null;
+  }
+
+  // Called when a block's inline content is done (see closeBlock() and the
+  // various paragraph/list-item/definition close points): any delimiter
+  // placeholder left anywhere in `root`'s subtree — including nested inside
+  // an <em>/<strong> from an earlier partial match — never found a valid
+  // partner and is swept to literal text (or removed, if fully consumed).
+  _flushEmphasis(root) {
+    if (!root || root.nodeType !== 1) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+    const leftover = [];
+    let n;
+    while ((n = walker.nextNode())) { if (n._emBase) leftover.push(n); }
+    for (const node of leftover) {
+      if (node._emLen > 0) node.replaceWith(document.createTextNode(node._emBase.repeat(node._emLen)));
+      else node.remove();
+    }
+  }
+
   // ── Resolve inline pending ─────────────────────────────────────────────────
   // `nextCh`: character to literally append after resolving (null = caller
   // handles it itself). `flankChar` (defaults to nextCh): the character to
@@ -1127,25 +1213,7 @@ class MarkdownStreamer {
       const baseChar = marker[0];
       if (baseChar === '*' || baseChar === '_') {
         const { canOpen, canClose } = this._canOpenClose(baseChar, this.pendingDelimBefore, flankChar);
-        const closeEl = canClose ? this.findInlineClose(marker) : null;
-        if (marker === '***') {
-          if (closeEl !== null) {
-            this._pop(closeEl); this.textNode = null;
-            if (this.dom.current._mdMarker === '***_em') { this.dom.pop(); this.textNode = null; }
-          } else if (canOpen) {
-            const strong = this.dom.push('strong'); strong._mdMarker = '***'; this.textNode = null;
-            const em = this.dom.push('em'); em._mdMarker = '***_em'; this.textNode = null;
-          } else {
-            this.writeText(marker);
-          }
-        } else if (closeEl !== null) {
-          this._pop(closeEl); this.textNode = null;
-        } else if (canOpen) {
-          const tag = this.markerToTag(marker);
-          const el = this.dom.push(tag); el._mdMarker = marker; this.textNode = null;
-        } else {
-          this.writeText(marker);
-        }
+        this._pushDelim(marker, baseChar, canOpen, canClose);
       } else {
         // Non-emphasis markers (code, strikethrough, sup/sub, highlight):
         // no flanking rules, just toggle open/close.
@@ -1184,6 +1252,14 @@ class MarkdownStreamer {
   flushInlinePending() {
     if (!this.inlinePending) return;
     const marker = this.inlinePending; this.inlinePending = '';
+    const baseChar = marker[0];
+    if (baseChar === '*' || baseChar === '_') {
+      // An abrupt boundary (end of a link label, etc.) — nothing follows
+      // within this scope, so "after" is boundary-like for flanking.
+      const { canOpen, canClose } = this._canOpenClose(baseChar, this.pendingDelimBefore, undefined);
+      this._pushDelim(marker, baseChar, canOpen, canClose);
+      return;
+    }
     const closeEl = this.findInlineClose(marker);
     if (closeEl !== null) { this._pop(closeEl); this.textNode = null; }
     else this.writeText(marker);
@@ -1335,6 +1411,7 @@ class MarkdownStreamer {
     if (this.bareUrlOpen) this.closeBareUrl();
     this._popMarkers();
     this.textNode = null;
+    this._flushEmphasis(this.lastBlockEl);
     if (this.dom.depth() > 1) this._popToBlockContainer();
     if (this.inTable) { this.inTable = false; this.tableHeadDone = false; this.inCell = false; this.tableColAlign = []; this.tableColIndex = 0; }
     this.inFootnoteDef = false;
@@ -1423,11 +1500,11 @@ class MarkdownStreamer {
         if (indent < top.indent) {
           while (this.listStack.length > 1 && this.listStack[this.listStack.length - 1].indent > indent) {
             this.listStack.pop();
-            if (this.dom.currentTag() === 'LI') this.dom.pop();
+            if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
             if (['UL','OL'].includes(this.dom.currentTag())) this.dom.pop();
           }
         }
-        if (this.dom.currentTag() === 'LI') this.dom.pop();
+        if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
         const now = this.listStack[this.listStack.length - 1];
         if (now.type !== type || now.marker !== marker) {
           if (['UL','OL'].includes(this.dom.currentTag())) this.dom.pop();
@@ -1474,7 +1551,7 @@ class MarkdownStreamer {
       this.decideBlock(ch);
       return;
     }
-    if (this.dom.currentTag() === 'LI') this.dom.pop();
+    if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
     this.lastBlockEl = null;
     // Not (yet) known whether this dedents fully out of the list or is a new
     // sibling item — openListItem() marks looseness itself if it turns out
@@ -1579,6 +1656,10 @@ class MarkdownStreamer {
     this.flushInlinePending();
     if (this.bareUrlOpen) this.closeBareUrl();
     this.textNode = null;
+    // Catch-all: the very last block never gets explicitly closed by a
+    // NEW block opening after it, so any delimiter placeholder anywhere in
+    // the whole document that's still unmatched is swept here.
+    this._flushEmphasis(this.root);
 
     // A hard break needs a following line to break *to* — one at the very
     // end of the document, with nothing after it, was never really a break.

@@ -578,6 +578,38 @@ test('with commonMarkStrict, "__text__" renders as <strong> per the CommonMark s
   assert.doesNotMatch(html, /<u>/);
 });
 
+// ── DOM-native emphasis resolver (no out-of-DOM delimiter buffer) ─────────
+// An opener only becomes real markup once a matching closer is actually
+// found (by walking DOM siblings backward, live); an opener that never
+// finds one is swept back to literal text once its block closes — this is
+// what the naive "resolve immediately on every marker" approach could not
+// do, since it commits to <em>/<strong> the moment a run merely LOOKS like
+// an opener, with no way to undo that later if no valid close ever arrives.
+test('an opener with no valid closer anywhere in the block stays fully literal', () => {
+  // "_foo_bar": the first "_" can open, but the only candidate closing "_"
+  // is intraword (forbidden) and so never validly closes it — the opener
+  // must fall back to literal text, not render as an unclosed <em>.
+  assert.strictEqual(render('_foo_bar\n', { commonMarkStrict: true }), '<p>_foo_bar</p>');
+});
+
+test('nested emphasis resolves correctly via DOM wrapping (no special-casing needed)', () => {
+  const html = render('*foo **bar** baz*\n', { commonMarkStrict: true });
+  assert.match(html, /<em>foo <strong>bar<\/strong> baz<\/em>/);
+});
+
+test('a run longer than needed leaves its leftover chars as literal text in place', () => {
+  // "*foo **bar***": the closing "***" only needs 2 of its 3 chars to
+  // close the "**bar" strong; the 1 leftover "*" stays literal, positioned
+  // right after — not silently absorbed into the closing tag.
+  const html = render('*foo **bar***\n', { commonMarkStrict: true });
+  assert.match(html, /<em>foo <strong>bar<\/strong><\/em>/);
+});
+
+test('the "multiple of 3" rule is applied (6.2 rules 9/10)', () => {
+  const html = render('foo***bar***baz\n', { commonMarkStrict: true });
+  assert.match(html, /foo<em><strong>bar<\/strong><\/em>baz/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
