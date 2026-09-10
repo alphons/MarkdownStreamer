@@ -99,6 +99,7 @@ class MarkdownStreamer {
     this.needsJoinSpace = false; this.hadJoinSpace = false;
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
+    this._inListContinuation = false;
     this.liAbsorb = null;
     this.atxSkipLeadingSpace = false;
     this.pendingListBlank = false; // NOT reset in resetLine(): set at the end of
@@ -720,6 +721,7 @@ class MarkdownStreamer {
     this.taskCheckBuf = null; this.taskCheckDone = false;
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
+    this._inListContinuation = false;
     this._blankBeforeNewItem = false;
     this.liAbsorb = null;
     this.atxSkipLeadingSpace = false;
@@ -2416,6 +2418,13 @@ class MarkdownStreamer {
       // quoted content — ends the blockquote like any other interruption,
       // it doesn't belong inside it.
       if (this._inBlockquoteContent && this.dom.currentTag() === 'BLOCKQUOTE') return;
+      // Same idea for a list item's second (loose-list) block that isn't
+      // a plain paragraph — a fenced code block, table, or similar,
+      // recognized via _resolveListBlankContinuation()'s decideBlock()
+      // replay. Only honored while actively processing that replay (this
+      // flag is reset every line), not generally — an UNINDENTED
+      // construct genuinely ending the list must still pop out normally.
+      if (this._inListContinuation && this.dom.currentTag() === 'LI') return;
       this.dom.pop();
     }
   }
@@ -2586,7 +2595,31 @@ class MarkdownStreamer {
         // genuinely separates two blocks that are both part of the list,
         // so it's loose.
         this._markListLoose(top);
-        this.openParagraph();
+        // BUT this next block isn't necessarily a paragraph — a fenced
+        // code block, table, blockquote, or nested list marker here needs
+        // to be recognized by decideBlock() as its OWN block (e.g. a
+        // numbered step containing a code sample), not forced straight
+        // into a synthesized <p> the way ordinary text needs (for correct
+        // separation between two loose-list paragraphs in the same item).
+        // A quick look at what `ch` could plausibly start gives
+        // decideBlock() first refusal; only the ordinary "this is just
+        // more text" case gets the placeholder <p> up front. A character
+        // that LOOKS like one of these but turns out not to form a valid
+        // one still falls back correctly through decideBlock()'s own
+        // internal fallback (_blockDefault()) — just without the
+        // placeholder paragraph, a narrower, rarer trade-off than leaving
+        // fences/tables/nested lists broken inside list items entirely.
+        if (!/^[`~|>0-9*+-]$/.test(ch)) this.openParagraph();
+        else if (ch === '`' || ch === '~') {
+          // A fence opened here needs fenceOpenIndent set to the item's
+          // real content column (not the 0 this.lineIndent was just
+          // reset to above) — later content lines' own indentation is
+          // still measured in absolute columns from line start via the
+          // ordinary top-level whitespace counter, so stripping the
+          // fence's relative indent from them only works if the fence's
+          // OWN recorded opening column matches that same absolute scale.
+          this.lineIndent = top.contentCol;
+        }
       } else {
         // This is the item's very FIRST content (an empty-marker line has
         // no prior content to join to) — onNewline()'s generic end-of-line
@@ -2594,6 +2627,14 @@ class MarkdownStreamer {
         // was sitting at the (as yet empty) <li>; not a real soft break.
         this.needsJoinSpace = false;
       }
+      // Whatever decideBlock() opens for `ch` (a fence, table, blockquote,
+      // ...) must stay nested inside THIS <li> — closeBlock() (called by
+      // most block-opening paths) otherwise pops all the way out via
+      // _popToBlockContainer(), same class of fix already applied for
+      // blockquote content and ATX headings inside a list item earlier
+      // this session. Reset every line (resetLine()), so this only
+      // affects this one replay, not the whole rest of the document.
+      this._inListContinuation = true;
       this.decideBlock(ch);
       return;
     }

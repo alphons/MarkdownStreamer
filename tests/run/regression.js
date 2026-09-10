@@ -1030,6 +1030,22 @@ test('block math cannot interrupt an open paragraph', () => {
   assert.ok(!html.includes('math-block'), 'must not start a math block mid-paragraph: ' + html);
 });
 
+// ── Mixed nested content in list items (a loose item's non-paragraph block) ─
+test('a fenced code block after a blank line inside a list item stays nested, correctly dedented', () => {
+  const html = render('1. First step\n\n   ```\n   code here\n   ```\n\n2. Second step\n');
+  assert.strictEqual(html, '<ol><li><p>First step</p><pre><code>code here\n</code></pre></li><li><p>Second step</p></li></ol>');
+});
+
+test('a table after a blank line inside a list item stays nested', () => {
+  const html = render('1. First step\n\n   | a | b |\n   |---|---|\n   | 1 | 2 |\n\n2. Second step\n');
+  assert.match(html, /<ol><li><p>First step<\/p><table>.*<\/table><\/li><li><p>Second step<\/p><\/li><\/ol>/s);
+});
+
+test('a blockquote after a blank line inside a list item stays nested', () => {
+  const html = render('- Item\n\n  > A quote\n  > continues\n\n- Next\n');
+  assert.strictEqual(html, '<ul><li><p>Item</p><blockquote><p>A quote continues</p></blockquote></li><li><p>Next</p></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
