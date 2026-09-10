@@ -771,6 +771,29 @@ test('a backtick-fence-invalid line ("```foo``") falls back to a literal code sp
   assert.strictEqual(render('```foo``\n'), '<p>```foo</p>');
 });
 
+// ── Link destination/title grammar (CommonMark 6.3) ─────────────────────────
+test('a bare (unwrapped) link destination cannot contain a raw space — falls back to literal', () => {
+  assert.strictEqual(render('[link](/my uri)\n'), '<p>[link](/my uri)</p>');
+});
+
+test('a link destination with unbalanced parens falls back to literal', () => {
+  assert.strictEqual(render('[link](foo(and(bar))\n'), '<p>[link](foo(and(bar))</p>');
+});
+
+test('a link title may use parentheses as the delimiter, same as quotes', () => {
+  const html = render('[link](/url (title))\n');
+  assert.match(html, /<a[^>]*href="\/url"[^>]*title="title"/);
+});
+
+test('an unescaped matching quote inside a same-delimiter title is invalid — falls back to literal', () => {
+  assert.strictEqual(render('[link](/url "title "and" title")\n'), '<p>[link](/url "title "and" title")</p>');
+});
+
+test('a link destination/title attempt that never reaches its closing ")" before the line ends falls back to literal, preserving the label', () => {
+  const html = render('[link](foo\nbar)\n');
+  assert.match(html, /^<p>\[link\]\(foo.bar\)<\/p>$/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

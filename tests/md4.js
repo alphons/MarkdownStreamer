@@ -110,7 +110,11 @@ class MarkdownStreamer {
   _pop(el)           { this.dom.popTo(el); this.dom.pop(); }
   _popMarkers()      { while (this.dom.current._mdMarker) this.dom.pop(); }
   _resetLinkUrl()    { this.linkState = null; this.urlBuf = ''; this.textNode = null; this._resetUrlParse(); }
-  _resetUrlParse()   { this.urlAngle = undefined; this.urlAngleValue = null; this.urlParenDepth = 0; this.urlEscapeNext = false; }
+  _resetUrlParse()   {
+    this.urlPhase = 'dest'; this.urlAngle = undefined;
+    this.urlDest = ''; this.urlTitle = null; this.urlTitleQuote = null;
+    this.urlParenDepth = 0; this.urlEscapeNext = false; this.urlRawBuf = ''; this.urlFailed = false;
+  }
   _resetSetext()     { this.setextWatch = false; this.setextBuf = ''; this.setextChar = ''; this.setextFailed = false; this.setextTrailing = false; }
   _resetHr()         { this.hrWatch = false; this.hrChar = ''; this.hrCount = 0; this.hrFailed = false; }
   _doneTaskCheck()   { this.taskCheckDone = true; this.taskCheckBuf = null; }
@@ -451,6 +455,22 @@ class MarkdownStreamer {
       const refKey = (isShortcut ? this.linkBuf : (this.urlBuf.trim() || this.linkBuf.trim())).trim().toLowerCase();
       this._pushRefImage(refKey, isShortcut);
       this._resetLinkUrl();
+    } else if (this.linkState === 'url') {
+      // A link destination/title never reaching its closing ")" before the
+      // line ends — CommonMark's inline-link destination cannot itself
+      // contain a raw line ending (a title spanning lines is a separate,
+      // not-yet-supported case) — the whole "[label](..." attempt, as
+      // typed so far, falls back to literal text, same shape as an
+      // in-line failure (_feedUrlChar returning {failed:true}).
+      const a = this.dom.find('A');
+      if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
+      this.abortLinkElement('(' + this.urlRawBuf);
+    } else if (this.linkState === 'img_url') {
+      this.appendToTextNode('![');
+      for (const c of this.linkBuf) { this.onInlineChar(c); this.lastChar = c; }
+      this.appendToTextNode('](' + this.urlRawBuf);
+      this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false; this.linkState = null;
+      this._resetUrlParse();
     } else if (this.linkState !== null) {
       this.abortLinkElement(null);
     }
@@ -1094,16 +1114,26 @@ class MarkdownStreamer {
         return;
 
       case 'img_url': {
-        const raw = this._feedUrlChar(ch);
-        if (raw !== null) {
-          const { url: iUrl, title: iTitle } = this._parseUrlBuf(raw);
-          const img = document.createElement('img');
-          img.src = iUrl; img.alt = this._renderInlineToPlainText(this.linkBuf);
-          if (iTitle) img.title = iTitle;
+        const result = this._feedUrlChar(ch);
+        if (result !== null) {
           const insideLink = !!this.dom.find('A');
-          if (!insideLink) img.className = 'blk';
-          this.dom.current.appendChild(img);
-          this.textNode = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
+          if (result.failed) {
+            // Invalid destination/title syntax — never really an image at
+            // all; "![", the label (replayed so any markup inside it still
+            // works), and the whole "(...)" attempt (exactly as typed,
+            // via urlRawBuf) all become literal text instead.
+            this.appendToTextNode('![');
+            for (const c of this.linkBuf) { this.onInlineChar(c); this.lastChar = c; }
+            this.appendToTextNode('](' + this.urlRawBuf);
+          } else {
+            const img = document.createElement('img');
+            img.src = result.url; img.alt = this._renderInlineToPlainText(this.linkBuf);
+            if (result.title) img.title = result.title;
+            if (!insideLink) img.className = 'blk';
+            this.dom.current.appendChild(img);
+            this.textNode = null;
+          }
+          this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
           this.linkState = insideLink ? 'label_open' : null;
           this._resetUrlParse();
         }
@@ -1162,12 +1192,25 @@ class MarkdownStreamer {
         return;
 
       case 'url': {
-        const raw = this._feedUrlChar(ch);
-        if (raw !== null) {
-          const { url, title } = this._parseUrlBuf(raw);
-          const a = this.dom.find('A');
-          if (a) { a.href = url; if (title) a.title = title; this._pop(a); }
-          this._resetLinkUrl();
+        const result = this._feedUrlChar(ch);
+        if (result !== null) {
+          if (result.failed) {
+            // Invalid destination/title syntax — the "[label]" was never
+            // really a link; unwrap the <a> (its content, e.g. already-
+            // rendered emphasis inside the label, stays as plain content,
+            // with a literal "[" restored before it — never written
+            // earlier, since "[" commits straight to a real <a> for the
+            // live-streaming case) and append "(" + the whole failed
+            // attempt, exactly as typed.
+            const a = this.dom.find('A');
+            if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
+            this.abortLinkElement('(' + this.urlRawBuf);
+          }
+          else {
+            const a = this.dom.find('A');
+            if (a) { a.href = result.url; if (result.title) a.title = result.title; this._pop(a); }
+            this._resetLinkUrl();
+          }
         }
         return;
       }
@@ -1229,33 +1272,86 @@ class MarkdownStreamer {
     if (extraCh !== null) this.appendToTextNode(extraCh);
   }
 
-  // Feeds one character of a `(...)` inline link/image destination.
-  // Handles backslash escapes, `<angle-bracket>` destinations (spaces
-  // percent-encoded, no paren-balancing needed inside), and balanced
-  // parens in the unwrapped form (foo(bar) stays part of the URL).
-  // Returns the raw "url [title]" string once the closing, unnested ')'
-  // is reached, else null (still accumulating).
+  // Feeds one character of a `(...)` inline link/image destination + title,
+  // following CommonMark 6.3's actual grammar via an explicit phase state
+  // machine (dest -> gap -> title -> trail), rather than accumulating
+  // everything and trying to split a destination from a title after the
+  // fact (which can't correctly tell an escaped delimiter from a real one,
+  // since escapes are resolved as characters arrive, not after).
+  // Returns null while still accumulating, or — once the closing,
+  // unnested ')' is reached — either { url, title } on success or
+  // { failed: true } if the destination/title never matched valid syntax
+  // (caller falls the whole "(...)" attempt back to literal text, via
+  // urlRawBuf, which always holds every character exactly as typed).
   _feedUrlChar(ch) {
-    if (this.urlEscapeNext) { this.urlBuf += ch; this.urlEscapeNext = false; return null; }
-    if (ch === '\\') { this.urlEscapeNext = true; return null; }
-    if (this.urlAngle === undefined) {
-      this.urlAngle = ch === '<';
-      if (this.urlAngle) return null;
-    }
-    if (this.urlAngle && this.urlAngleValue === null) {
-      if (ch === '>') { this.urlAngleValue = this.urlBuf.replace(/ /g, '%20'); this.urlBuf = ''; }
-      else this.urlBuf += ch;
+    this.urlRawBuf += ch;
+
+    if (this.urlEscapeNext) {
+      this.urlEscapeNext = false;
+      // Only ASCII punctuation is a recognized escape (CommonMark 2.4) —
+      // anything else keeps the backslash literal, both characters kept.
+      const lit = this._isPunct(ch) ? ch : '\\' + ch;
+      if (this.urlPhase === 'dest') this.urlDest += lit;
+      else if (this.urlPhase === 'title') this.urlTitle += lit;
+      else this.urlFailed = true;
       return null;
     }
-    if (!this.urlAngle) {
-      if (ch === '(') { this.urlParenDepth++; this.urlBuf += ch; return null; }
-      if (ch === ')' && this.urlParenDepth > 0) { this.urlParenDepth--; this.urlBuf += ch; return null; }
+    if (ch === '\\' && (this.urlPhase === 'dest' || this.urlPhase === 'title')) {
+      this.urlEscapeNext = true;
+      return null;
     }
-    if (ch === ')') {
-      return this.urlAngleValue !== null ? `${this.urlAngleValue} ${this.urlBuf}` : this.urlBuf;
+
+    if (this.urlPhase === 'dest') {
+      if (this.urlAngle === undefined) {
+        this.urlAngle = ch === '<' && this.urlDest === '';
+        if (this.urlAngle) return null; // consume the "<" itself, not part of the destination
+      }
+      if (this.urlAngle) {
+        if (ch === '>') { this.urlPhase = 'gap'; return null; }
+        if (ch === '<') this.urlFailed = true; // an unescaped "<" inside <...> is invalid
+        this.urlDest += ch; return null;
+      }
+      // Bare (unwrapped) destination: balanced, unescaped parens are part
+      // of it; it ends at the first whitespace (start of the gap before an
+      // optional title) or the closing ")" of the whole construct.
+      if (ch === '(') { this.urlParenDepth++; this.urlDest += ch; return null; }
+      if (ch === ')') {
+        if (this.urlParenDepth > 0) { this.urlParenDepth--; this.urlDest += ch; return null; }
+        return this._finishUrl();
+      }
+      if (/\s/.test(ch)) { this.urlPhase = 'gap'; return null; }
+      this.urlDest += ch; return null;
     }
-    this.urlBuf += ch;
-    return null;
+
+    if (this.urlPhase === 'gap') {
+      // Whitespace between the destination and an optional title.
+      if (ch === ')') return this._finishUrl();
+      if (/\s/.test(ch)) return null;
+      if (ch === '"' || ch === "'" || ch === '(') {
+        this.urlPhase = 'title'; this.urlTitleQuote = ch; this.urlTitle = ''; return null;
+      }
+      this.urlFailed = true; return null; // anything else here isn't valid title syntax
+    }
+
+    if (this.urlPhase === 'title') {
+      const closeCh = this.urlTitleQuote === '(' ? ')' : this.urlTitleQuote;
+      if (this.urlTitleQuote === '(' && ch === '(') this.urlFailed = true; // unescaped "(" inside a (...)-title
+      if (ch === closeCh) { this.urlPhase = 'trail'; return null; }
+      this.urlTitle += ch; return null;
+    }
+
+    // 'trail': only whitespace may follow the title before the closing ")".
+    if (ch === ')') return this._finishUrl();
+    if (/\s/.test(ch)) return null;
+    this.urlFailed = true; return null;
+  }
+
+  _finishUrl() {
+    if (this.urlFailed) return { failed: true };
+    return {
+      url: this._encodeUrl(this._decodeEntities(this.urlDest)),
+      title: this.urlTitle !== null ? this._decodeEntities(this.urlTitle) : null,
+    };
   }
 
   _parseUrlBuf(raw = this.urlBuf) {
