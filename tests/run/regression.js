@@ -939,6 +939,10 @@ test('an empty list marker followed by a blank line stays empty forever — late
   assert.strictEqual(render('-\n\n  foo\n'), '<ul><li></li></ul><p>foo</p>');
 });
 
+test('a tab overshooting the indented-code trigger column keeps its leftover width as literal spaces', () => {
+  assert.strictEqual(render('- foo\n\n\t\tbar\n'), '<ul><li><p>foo</p><pre><code>  bar\n</code></pre></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

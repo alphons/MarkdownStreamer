@@ -175,6 +175,13 @@ class MarkdownStreamer {
           }
           this.indentCodeListCol = top.contentCol;
           this.pendingListBlank = false;
+          // A tab can overshoot the trigger column (tabs jump to the next
+          // multiple of 4, not one column at a time) — whatever's past the
+          // threshold is still literal indentation WITHIN the code content,
+          // not part of the syntax that opened it, so it's written out as
+          // plain spaces rather than silently discarded.
+          const overshoot = this.lineIndent - (top.contentCol + 4);
+          if (overshoot > 0) this.textNode.data += ' '.repeat(overshoot);
           this._bd(); this.lineIndent = 0;
           return;
         }
@@ -195,6 +202,8 @@ class MarkdownStreamer {
             this.textNode = document.createTextNode(''); code.appendChild(this.textNode);
             this.inIndentCode = true; this.lastBlockEl = pre;
           }
+          const overshoot = this.lineIndent - threshold;
+          if (overshoot > 0) this.textNode.data += ' '.repeat(overshoot);
           this._bd(); this.lineIndent = 0;
         }
         return;
