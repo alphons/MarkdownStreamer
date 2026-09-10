@@ -1427,6 +1427,17 @@ class MarkdownStreamer {
   // ── Code fence ─────────────────────────────────────────────────────────────
   onCodeFenceNewline() {
     if (!this.dom.find('PRE')) {
+      // CommonMark: a backtick fence's info string may not itself contain a
+      // backtick (a tilde fence has no such restriction) — one appearing
+      // there means the opening line was never a valid fence at all, so it
+      // falls back to being an ordinary paragraph line instead.
+      if (this.fenceChar === '`' && (this.fencePrefix || '').includes('`')) {
+        const literal = this.fenceChar.repeat(this.fenceCount) + (this.fencePrefix || '');
+        this.inCodeFence = false; this.fencePrefix = null; this.closingFenceBuf = null;
+        this.closeBlock(); this.openParagraph(); this.blockDecided = true;
+        for (const c of literal) { this.onInlineChar(c); this.lastChar = c; }
+        this.resetLine(); return;
+      }
       // The info string is subject to backslash-escape processing, same as
       // regular inline text (e.g. "```foo\+bar" -> language "foo+bar").
       const lang = this._decodeEntities((this.fencePrefix || '').trim().split(/\s+/)[0]

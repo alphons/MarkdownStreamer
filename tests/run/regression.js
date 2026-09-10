@@ -683,6 +683,14 @@ test('a reference-style image label with emphasis also gets a plain-text alt', (
   assert.match(html, /alt="foo bar"/);
 });
 
+test('a backtick fence whose info string itself contains a backtick is not a valid fence', () => {
+  // CommonMark: a backtick-fenced code block's info string may not contain
+  // a backtick (unlike a tilde fence) — "```foo``" was never a real fence
+  // opener, so the whole line falls back to ordinary paragraph content.
+  const html = render('```foo``\n');
+  assert.ok(!html.includes('<pre>'), 'should not render as a fenced code block: ' + html);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
