@@ -629,6 +629,13 @@ test('an ordered list marker with multiple spaces absorbs them into the content 
   assert.strictEqual(render('1.  A paragraph.\n'), '<ol><li>A paragraph.</li></ol>');
 });
 
+test('an inline "<...>" whose attributes lack proper leading whitespace is not a valid tag, stays literal', () => {
+  // "href='bar'title=title": no whitespace between the closing quote and
+  // "title" — CommonMark's tag grammar requires each attribute to have its
+  // own leading whitespace, so this whole span is not an HTML tag at all.
+  assert.strictEqual(render("<a href='bar'title=title>\n"), "<p>&lt;a href='bar'title=title&gt;</p>");
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

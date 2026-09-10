@@ -872,6 +872,26 @@ class MarkdownStreamer {
     this.textNode = null;
   }
 
+  // CommonMark 6.6 open-tag grammar: tagname followed by zero or more
+  // attributes, each of which needs its OWN leading whitespace — no
+  // whitespace before an attribute (e.g. "href='bar'title=title", where
+  // "title" directly follows the closing quote) makes the whole thing not
+  // a valid tag at all, so it must render as literal (escaped) text
+  // instead of being parsed into a real element.
+  _isValidOpenTagBody(buf) {
+    const m = buf.match(/^[a-zA-Z][a-zA-Z0-9-]*/);
+    if (!m) return false;
+    let rest = buf.slice(m[0].length);
+    const attrRe = /^\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(\s*=\s*([^\s"'=<>`]+|'[^']*'|"[^"]*"))?/;
+    while (rest.length) {
+      if (/^\s*\/?\s*$/.test(rest)) return true;
+      const am = rest.match(attrRe);
+      if (!am) return false;
+      rest = rest.slice(am[0].length);
+    }
+    return true;
+  }
+
   // Classifies and applies a buffered "<...>" span once its closing '>' is
   // found (called from onInlineChar; see the comment there).
   _resolveAutolinkBuf() {
@@ -887,7 +907,7 @@ class MarkdownStreamer {
     }
 
     const openMatch = buf.match(/^([a-zA-Z][a-zA-Z0-9-]*)(\s[\s\S]*)?\/?$/);
-    if (openMatch) {
+    if (openMatch && this._isValidOpenTagBody(buf)) {
       const tagName = openMatch[1];
       const selfClosing = /\/\s*$/.test(buf) || VOID_TAGS.has(tagName.toLowerCase());
       const body = selfClosing ? buf.replace(/\/\s*$/, '') : buf;
