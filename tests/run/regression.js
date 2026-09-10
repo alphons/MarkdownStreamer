@@ -881,6 +881,12 @@ test('two sibling items at the same nested level stay siblings, not popped back 
   assert.strictEqual(html, '<ul><li><p>a</p><ul><li>b</li><li>c</li></ul></li><li><p>d</p><ul><li>e</li><li>f</li></ul></li></ul>');
 });
 
+test('a new sibling list item after a blank-line continuation paragraph never nests inside that <p>', () => {
+  const html = render('- a\n- b\n\n  c\n- d\n');
+  assert.ok(!/<li>\s*d\s*<\/li>\s*<\/p>/.test(html), 'must not nest <li> inside <p>: ' + html);
+  assert.strictEqual(html, '<ul><li><p>a</p></li><li><p>b</p><p>c</p></li><li><p>d</p></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

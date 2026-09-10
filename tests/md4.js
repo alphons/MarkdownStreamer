@@ -2026,6 +2026,17 @@ class MarkdownStreamer {
   // the marker + its required space) — used to tell a paragraph-continuation
   // of THIS item (indented at least that far, after a blank line) apart from
   // content that dedents back out of the list entirely.
+  // Ascends dom.current back up to the nearest enclosing <li>/<ul>/<ol> (or
+  // the document root, if none), stopping there rather than popping past it
+  // — used before treating a new marker as ending the current item, since
+  // dom.current can be sitting several levels deeper inside it (a
+  // continuation paragraph, a nested blockquote, ...) at that point.
+  _ascendToLI() {
+    while (!['LI', 'UL', 'OL'].includes(this.dom.currentTag()) && this.dom.current !== this.dom.bottomStack) {
+      this.dom.pop();
+    }
+  }
+
   openListItem(type, indent, marker, startNum, contentCol) {
     this._popMarkers();
     this.textNode = null;
@@ -2057,10 +2068,18 @@ class MarkdownStreamer {
         if (indent < top.indent) {
           while (this.listStack.length > 1 && this.listStack[this.listStack.length - 1].indent > indent) {
             this.listStack.pop();
-            if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
+            this._ascendToLI(); if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
             if (['UL','OL'].includes(this.dom.currentTag())) this.dom.pop();
           }
         }
+        // dom.current may be several levels deep inside the target <li>
+        // right now — e.g. a blank-line-continuation <p>, or a nested
+        // blockquote/code block — rather than the <li> itself, if this new
+        // marker is a sibling of an item whose content didn't end with a
+        // fresh line at the <li> level. Ascend back up to it first, or the
+        // new sibling <li> would end up nested INSIDE whatever was still
+        // open (invalid HTML: e.g. a <li> as a child of a <p>).
+        this._ascendToLI();
         if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
         const now = this.listStack[this.listStack.length - 1];
         if (now.type !== type || now.marker !== marker) {
