@@ -691,6 +691,14 @@ test('a backtick fence whose info string itself contains a backtick is not a val
   assert.ok(!html.includes('<pre>'), 'should not render as a fenced code block: ' + html);
 });
 
+test('a fenced code block closer indented up to 3 spaces is still recognized', () => {
+  assert.strictEqual(render('```\naaa\n  ```\n'), '<pre><code>aaa\n</code></pre>');
+});
+
+test("a fenced code block's content is dedented by the opening fence's own indent width", () => {
+  assert.strictEqual(render('  ```\naaa\n  aaa\naaa\n  ```\n'), '<pre><code>aaa\naaa\naaa\n</code></pre>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

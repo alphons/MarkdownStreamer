@@ -81,6 +81,7 @@ class MarkdownStreamer {
     this.refDefs = {};
     this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0;
     this.fenceChar = '`'; this.fencePrefix = ''; this.closingFenceBuf = null; this.fenceLineHasContent = false;
+    this.fenceOpenIndent = 0; this.fenceLineIndent = 0; this.fenceLineIndentDone = false;
     this.inTable = false; this.tableHeadDone = false; this.tableColAlign = [];
     this.tableColIndex = 0; this.inCell = false; this.tablePipePending = false;
     this._resetSetext(); this._resetHr();
@@ -279,6 +280,7 @@ class MarkdownStreamer {
       } else if ((p[0] === '`' || p[0] === '~') && p.length >= 3 && p.split('').every(c => c === p[0])) {
         this.closeBlock(); this.inCodeFence = true; this.fenceChar = p[0];
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
+        this.fenceOpenIndent = this.lineIndent;
         this.onCodeFenceNewline();
       } else if (p[0] === '*' && /^\*{3,}$/.test(p)) {
         this.makeHr();
@@ -494,6 +496,7 @@ class MarkdownStreamer {
         if (fenceCount >= 3) {
           this.closeBlock(); this.inCodeFence = true; this.fenceChar = fc;
           this.fenceCount = fenceCount; this.fencePrefix = ch; this.closingFenceBuf = null;
+          this.fenceOpenIndent = this.lineIndent;
           this._bd(); return;
         }
         this._blockDefault(ch); return;
@@ -1448,27 +1451,51 @@ class MarkdownStreamer {
       if (lang) code.className = 'language-' + lang;
       pre.appendChild(code);
       this.textNode = document.createTextNode(''); code.appendChild(this.textNode);
-      this.closingFenceBuf = ''; this.fenceLineHasContent = false; return;
+      this.closingFenceBuf = ''; this.fenceLineHasContent = false;
+      this.fenceLineIndent = 0; this.fenceLineIndentDone = false; return;
     }
     // A run of (only) the fence char spanning the WHOLE line, at least as
     // long as the opening fence, closes it — a longer closer is allowed,
-    // not just an exact-length match.
-    if (!this.fenceLineHasContent && this.closingFenceBuf.length >= (this.fenceCount || 3)) {
+    // not just an exact-length match. Per CommonMark the closing fence
+    // itself may be indented up to 3 spaces (fenceLineIndent, tracked by
+    // feedCodeFenceLine), independent of the opening fence's own indent.
+    if (!this.fenceLineHasContent && this.closingFenceBuf.length >= (this.fenceCount || 3)
+        && (this.fenceLineIndent || 0) <= 3) {
       this.inCodeFence = false; this.closingFenceBuf = null; this.textNode = null;
       const pre = this.dom.find('PRE'); if (pre) this._pop(pre);
       this.lastBlockEl = null; this.resetLine(); return;
     }
-    // Wasn't a valid closer after all — the withheld run is literal content.
+    // Wasn't a valid closer after all — the withheld run (and any leading
+    // indentation beyond the opening fence's own width) is literal content.
+    const strip = Math.min(this.fenceLineIndent || 0, this.fenceOpenIndent || 0);
+    if (this.textNode && (this.fenceLineIndent || 0) > strip) this.textNode.data += ' '.repeat(this.fenceLineIndent - strip);
     if (this.closingFenceBuf && this.textNode) this.textNode.data += this.closingFenceBuf;
     if (this.textNode) this.textNode.data += '\n';
     this.closingFenceBuf = ''; this.fenceLineHasContent = false;
+    this.fenceLineIndent = 0; this.fenceLineIndentDone = false;
   }
 
   feedCodeFenceLine(ch) {
-    // Only the *start* of a line can open a potential closing-fence run —
-    // once any other content has been written this line, later fence-char
-    // runs (e.g. the "```" in "aaa```") can't retroactively become one.
-    if (!this.fenceLineHasContent && ch === this.fenceChar) { this.closingFenceBuf += ch; return; }
+    // Leading-indentation phase: absorb spaces without writing them yet —
+    // needed both to recognize a closing fence indented up to 3 spaces, and
+    // to know how much of a content line's indentation to strip (exactly
+    // the opening fence's own indent width, CommonMark 4.5).
+    if (!this.fenceLineHasContent && this.closingFenceBuf === '' && !this.fenceLineIndentDone && ch === ' ') {
+      this.fenceLineIndent = (this.fenceLineIndent || 0) + 1;
+      return;
+    }
+    this.fenceLineIndentDone = true;
+    // Only the *start* of a line (after any leading indent) can open a
+    // potential closing-fence run — once any other content has been
+    // written this line, later fence-char runs (e.g. the "```" in
+    // "aaa```") can't retroactively become one.
+    if (!this.fenceLineHasContent && ch === this.fenceChar) {
+      this.closingFenceBuf += ch; return;
+    }
+    if (!this.fenceLineHasContent) {
+      const strip = Math.min(this.fenceLineIndent || 0, this.fenceOpenIndent || 0);
+      if (this.textNode && (this.fenceLineIndent || 0) > strip) this.textNode.data += ' '.repeat(this.fenceLineIndent - strip);
+    }
     if (this.closingFenceBuf) {
       if (this.textNode) this.textNode.data += this.closingFenceBuf;
       this.closingFenceBuf = '';
