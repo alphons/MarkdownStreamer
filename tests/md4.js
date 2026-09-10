@@ -1004,7 +1004,7 @@ class MarkdownStreamer {
         if (raw !== null) {
           const { url: iUrl, title: iTitle } = this._parseUrlBuf(raw);
           const img = document.createElement('img');
-          img.src = iUrl; img.alt = this.linkBuf;
+          img.src = iUrl; img.alt = this._renderInlineToPlainText(this.linkBuf);
           if (iTitle) img.title = iTitle;
           const insideLink = !!this.dom.find('A');
           if (!insideLink) img.className = 'blk';
@@ -1088,13 +1088,39 @@ class MarkdownStreamer {
     const insideLink = !!this.dom.find('A');
     const img = document.createElement('img');
     img.src = ''; // set first so later resolving it in finalize() keeps src before alt in attribute order
-    img.alt = this.linkBuf;
+    img.alt = this._renderInlineToPlainText(this.linkBuf);
     img.dataset.refKey = refKey;
     if (isShortcut) img.dataset.refShortcut = '1';
     if (!insideLink) img.className = 'blk';
     this.dom.current.appendChild(img);
     this.textNode = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.linkState = insideLink ? 'label_open' : null;
+  }
+
+  // CommonMark: an image's "alt" attribute is the PLAIN-TEXT rendering of
+  // its label — any inline markup in the label (emphasis, code spans,
+  // nested links/images, entities, ...) is processed as usual and then
+  // flattened to text, not kept as literal markdown source. Rendered into a
+  // detached scratch element using the same inline machinery as real
+  // content, then read back via textContent (which itself strips all
+  // tags) — no separate plain-text renderer needed.
+  _renderInlineToPlainText(raw) {
+    const scratch = document.createElement('span');
+    const saved = {
+      current: this.dom.current, textNode: this.textNode, inlinePending: this.inlinePending,
+      lastChar: this.lastChar, prevCharWs: this.prevCharWs, pendingDelimBefore: this.pendingDelimBefore,
+      linkState: this.linkState, linkBuf: this.linkBuf, urlBuf: this.urlBuf, linkIsImage: this.linkIsImage,
+    };
+    this.dom.current = scratch; this.textNode = null; this.inlinePending = '';
+    this.lastChar = undefined; this.prevCharWs = true; this.linkState = null;
+    for (const ch of raw) { this.onInlineChar(ch); this.lastChar = ch; }
+    this.flushInlinePending();
+    this._flushEmphasis(scratch);
+    const text = scratch.textContent;
+    this.dom.current = saved.current; this.textNode = saved.textNode; this.inlinePending = saved.inlinePending;
+    this.lastChar = saved.lastChar; this.prevCharWs = saved.prevCharWs; this.pendingDelimBefore = saved.pendingDelimBefore;
+    this.linkState = saved.linkState; this.linkBuf = saved.linkBuf; this.urlBuf = saved.urlBuf; this.linkIsImage = saved.linkIsImage;
+    return text;
   }
 
   abortLinkElement(extraCh) {

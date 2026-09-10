@@ -673,6 +673,16 @@ test('blank lines at the start and end of an indented code block are trimmed, no
   assert.strictEqual(render('\n    \n    foo\n    \n\n'), '<pre><code>foo\n</code></pre>');
 });
 
+test('an image alt attribute is the plain-text rendering of its label, not raw markdown source', () => {
+  const html = render('![foo *bar*](train.jpg)\n');
+  assert.match(html, /alt="foo bar"/);
+});
+
+test('a reference-style image label with emphasis also gets a plain-text alt', () => {
+  const html = render('![foo *bar*]\n\n[foo *bar*]: train.jpg "train tracks"\n');
+  assert.match(html, /alt="foo bar"/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
