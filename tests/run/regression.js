@@ -731,6 +731,10 @@ test('trailing whitespace on the last quoted line before a blank one does not le
   assert.strictEqual(html, '<blockquote><p>foo</p></blockquote>');
 });
 
+test('a genuinely blank (unprefixed) line ends the blockquote, not just its current paragraph', () => {
+  assert.strictEqual(render('> foo\n\n> bar\n'), '<blockquote><p>foo</p></blockquote><blockquote><p>bar</p></blockquote>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

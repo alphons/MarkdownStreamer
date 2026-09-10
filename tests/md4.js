@@ -336,6 +336,12 @@ class MarkdownStreamer {
       } else if (tag === 'P') {
         this._flushEmphasis(this.dom.current);
         this.dom.pop(); this.textNode = null; this.lastBlockEl = null;
+        // A genuinely blank line (no ">" prefix at all — that case is
+        // handled separately above, and does NOT exit the quote) always
+        // ends every currently open blockquote, even nested ones — unlike
+        // a list item, a blockquote does not survive a blank line via lazy
+        // continuation.
+        while (this.dom.currentTag() === 'BLOCKQUOTE') this.dom.pop();
       } else if (tag === 'DD') {
         this._flushEmphasis(this.dom.current);
         this.dom.toRoot(); this.textNode = null; this.lastBlockEl = null;
