@@ -92,6 +92,8 @@ class MarkdownStreamer {
     this.defPending = null;
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
     this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+    this.mathInlineBuf = null; // "$...$" — not CommonMark, a common AI-output extension
+    this.inMathBlock = false; this.mathBlockLineBuf = ''; this.mathBlockTextNode = null;
 
     this.sepWatch = false; this.sepFailed = false; this.sepRowEl = null; this.sepBuf = '';
     this.needsJoinSpace = false; this.hadJoinSpace = false;
@@ -135,6 +137,16 @@ class MarkdownStreamer {
       this.fencePrefix += ch; return;
     }
     if (this.inRawHtml) { this.rawHtmlBuf += ch; this.rawHtmlLineBuf += ch; return; }
+    // Block math ("$$" alone on its own line, ended by another "$$"-alone
+    // line — not CommonMark, a common AI-output extension): content is
+    // fully literal, like a fenced code block, and every line (including a
+    // blank one) survives until the matching close is found.
+    // A dedicated text-node reference, not the shared this.textNode: the
+    // latter gets reset to null by onNewline()'s own shared end-of-line
+    // cleanup (flushInlinePending() etc.), which runs regardless of what
+    // opened this block, unlike this.rawHtmlBuf's plain-string
+    // accumulation used for the analogous raw-HTML case just above.
+    if (this.inMathBlock) { this.mathBlockLineBuf += ch; if (this.mathBlockTextNode) this.mathBlockTextNode.data += ch; return; }
     // An open inline code span (an unclosed backtick-run opener) survives a
     // line ending — CommonMark 6.1 — so its content, including this line's
     // OWN leading whitespace, is still fully literal code-span content, not
@@ -407,6 +419,17 @@ class MarkdownStreamer {
       else { if (this.textNode) this.textNode.data += '\n'.repeat(this.pendingIndentNL) + '\n'; this.pendingIndentNL = 0; }
       this.resetLine(); return;
     }
+    if (this.inMathBlock) {
+      const mathLine = this.mathBlockLineBuf;
+      this.mathBlockLineBuf = '';
+      if (this.mathBlockTextNode) this.mathBlockTextNode.data += '\n';
+      if (mathLine.trim() === '$$') {
+        this.inMathBlock = false;
+        if (this.lastBlockEl) this._pop(this.lastBlockEl);
+        this.mathBlockTextNode = null; this.textNode = null; this.lastBlockEl = null;
+      }
+      this.resetLine(); return;
+    }
     if (this.inRawHtml) {
       const line = this.rawHtmlLineBuf;
       this.rawHtmlBuf += '\n';
@@ -513,6 +536,15 @@ class MarkdownStreamer {
         // tag but whitespace) is actually known.
         this._startHtmlBlock('blank', null);
         this.rawHtmlBuf += '\n'; this.rawHtmlLineBuf = '';
+      } else if (p === '$$' && contTag !== 'P' && contTag !== 'LI' && contTag !== 'DD') {
+        // Block math opener: "$$" alone on its own line — decideBlock()'s
+        // "$" case waits here the same way "<" does for a tag name (see
+        // above); resolved once the whole line is known to be just "$$".
+        // Cannot interrupt an open paragraph, same restriction as type-7
+        // HTML blocks and an empty list marker (a bare "$$" mid-paragraph
+        // reads far more naturally as literal text than a display-math
+        // opener).
+        this._startMathBlock();
       } else if (/^#{1,6}$/.test(p)) {
         // A bare "#".."######" alone on a line (no trailing space, but also
         // no more content before the newline) is still a valid — empty —
@@ -606,6 +638,13 @@ class MarkdownStreamer {
     if (this.autolinkBuf !== null) {
       this.appendToTextNode('<' + this.autolinkBuf);
       this.autolinkBuf = null; this.autolinkQuote = null;
+    }
+
+    // Same for inline math: it doesn't span a line ending, so an
+    // unresolved "$..." at end-of-line was never valid math after all.
+    if (this.mathInlineBuf !== null) {
+      this.appendToTextNode('$' + this.mathInlineBuf);
+      this.mathInlineBuf = null;
     }
 
     // Same for an unresolved "&entity" attempt with no closing ";" yet.
@@ -731,6 +770,18 @@ class MarkdownStreamer {
     const p = this.pending;
 
     switch (p[0]) {
+      case '$':
+        // Block math ("$$" alone on its own line — not CommonMark, a
+        // common AI-output extension). Kept deliberately narrow: only
+        // fires when "$$" is the WHOLE line (confirmed once a 3rd
+        // character shows content follows it on the same line, or via
+        // onNewline()'s undecided-line handling if the line ends right at
+        // "$$") — content immediately after "$$" on its own opening line
+        // is treated as ordinary text instead, avoiding any ambiguity
+        // with inline math or a bare "$" for currency.
+        if (p.length === 1) return;
+        if (p === '$$') return;
+        this._blockDefault(ch); return;
       case '#':
         if (ch === '#' && p.length <= 6) return;
         if ((ch === ' ' || ch === '\t') && p.length >= 2 && /^#{1,6}$/.test(p.slice(0,-1))) {
@@ -1109,6 +1160,45 @@ class MarkdownStreamer {
       return;
     }
 
+    // Inline math: $...$ (a non-standard extension, not CommonMark — but
+    // near-universal in AI-model output). Content is buffered and kept
+    // 100% literal, like an autolink's "<...>" span just below: LaTeX
+    // relies heavily on "\" and "_" and "*", none of which should be
+    // touched by escape/entity/emphasis handling while inside it. Per the
+    // common convention (matching most chat-UI renderers), the delimiter
+    // must not have whitespace touching it on the inside — "$5 vs $10"
+    // stays plain text — and doesn't span a line ending (see onNewline()'s
+    // matching abandon-on-EOL handling). Kept single-line-only (unlike the
+    // DOM-native two-pass resolvers for emphasis/code spans) since inline
+    // math is overwhelmingly single-line in practice, and this is already
+    // the same lightweight buffer-until-delimiter shape already used here
+    // for autolinks/entities, not a new pattern.
+    if (this.mathInlineBuf !== null) {
+      if (ch === '$') {
+        if (this.mathInlineBuf.length > 0 && !/^\s|\s$/.test(this.mathInlineBuf)) {
+          const span = document.createElement('span');
+          span.className = 'math math-inline';
+          span.appendChild(document.createTextNode('$' + this.mathInlineBuf + '$'));
+          this.dom.current.appendChild(span);
+          this.textNode = null; this.mathInlineBuf = null;
+          this.prevCharWs = false; return;
+        }
+        // Empty, or whitespace touching a delimiter — never valid math;
+        // the opening "$" and everything buffered become literal text,
+        // and this "$" gets a fresh chance as a new potential opener.
+        this.appendToTextNode('$' + this.mathInlineBuf);
+        this.mathInlineBuf = '';
+        return;
+      }
+      this.mathInlineBuf += ch;
+      return;
+    }
+    // NOT "if (ch === '$') start math" here — a backslash-escaped "\$"
+    // must be handled by the ESCAPE logic below first (consuming the "\"
+    // and writing a literal "$"), or "\$" would always open math instead
+    // of ever being escapable. See the trigger further down, after
+    // escapeNext is checked.
+
     if (this.linkState !== null) { this.onLinkChar(ch); return; }
 
     // Autolink / inline HTML — CommonMark allows ANY HTML-tag-like
@@ -1150,6 +1240,8 @@ class MarkdownStreamer {
       this.prevCharWs = false; return;
     }
     if (ch === '\\') { this.escapeNext = true; return; }
+
+    if (ch === '$') { this.mathInlineBuf = ''; return; }
 
     // HTML entity
     if (this.entityBuf !== null) {
@@ -2220,6 +2312,27 @@ class MarkdownStreamer {
   // the matching close marker), 'tag' (type 1, end on a line with the
   // matching closing tag; `closeTag` names it), or 'blank' (types 6/7, end
   // at the next blank line).
+  // Block math ("$$" alone on its own line — not CommonMark, a common
+  // AI-output extension): content between the two "$$" delimiter lines is
+  // fully literal (no markdown processing at all — LaTeX's own "\"/"_"/"*"
+  // would otherwise be misread), rendered into a <div class="math
+  // math-block"> whose text content keeps BOTH delimiter lines verbatim
+  // (rather than stripping them) — matching the convention most client-
+  // side math renderers (KaTeX, MathJax auto-render) expect when they
+  // scan the page for "$$...$$" to typeset.
+  _startMathBlock() {
+    this.closeBlock();
+    const div = this.dom.push('div');
+    div.className = 'math math-block';
+    this.mathBlockTextNode = document.createTextNode(this.pending + '\n'); // "$$\n" — the newline that ends this very opening line
+    div.appendChild(this.mathBlockTextNode);
+    this.textNode = null;
+    this.inMathBlock = true;
+    this.mathBlockLineBuf = '';
+    this.lastBlockEl = div;
+    this._bd();
+  }
+
   _startHtmlBlock(mode, closeTag) {
     this.closeBlock();
     this.inRawHtml = true;
@@ -2598,6 +2711,10 @@ class MarkdownStreamer {
     if (this.autolinkBuf !== null) {
       this.appendToTextNode('<' + this.autolinkBuf);
       this.autolinkBuf = null; this.autolinkQuote = null;
+    }
+    if (this.mathInlineBuf !== null) {
+      this.appendToTextNode('$' + this.mathInlineBuf);
+      this.mathInlineBuf = null;
     }
     if (this.entityBuf !== null) {
       this.appendToTextNode(this.entityBuf);

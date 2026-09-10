@@ -998,6 +998,38 @@ test('ordinary sibling list items still have no stray leading space (regression 
   assert.strictEqual(render('- one\n- two\n'), '<ul><li>one</li><li>two</li></ul>');
 });
 
+// ── Math notation (non-standard extension, common in AI-model output) ──────
+test('inline math ($...$) wraps in a math span, content kept literal', () => {
+  const html = render('The value of $x^2$ is nice.\n');
+  assert.strictEqual(html, '<p>The value of <span class="math math-inline">$x^2$</span> is nice.</p>');
+});
+
+test('a "$" touching whitespace is not treated as math (e.g. currency)', () => {
+  assert.strictEqual(render('It costs $5 or $10.\n'), '<p>It costs $5 or $10.</p>');
+});
+
+test('an unclosed inline math attempt falls back to literal text at end of line', () => {
+  assert.strictEqual(render('The value of $x^2\n'), '<p>The value of $x^2</p>');
+});
+
+test('a backslash-escaped "$" is never treated as math', () => {
+  assert.strictEqual(render('Cost is ' + String.fromCharCode(92) + '$5.\n'), '<p>Cost is $5.</p>');
+});
+
+test('block math ($$ alone on its own line) wraps in a math-block div, delimiters kept', () => {
+  assert.strictEqual(render('$$\nx = y^2 + 1\n$$\n'), '<div class="math math-block">$$\nx = y^2 + 1\n$$\n</div>');
+});
+
+test('block math preserves a blank line inside it', () => {
+  const html = render('$$\na\n\nb\n$$\nafter\n');
+  assert.strictEqual(html, '<div class="math math-block">$$\na\n\nb\n$$\n</div><p>after</p>');
+});
+
+test('block math cannot interrupt an open paragraph', () => {
+  const html = render('foo\n$$\nbar\n');
+  assert.ok(!html.includes('math-block'), 'must not start a math block mid-paragraph: ' + html);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
