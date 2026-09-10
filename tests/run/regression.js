@@ -534,6 +534,38 @@ test('three items separated by blank lines all get wrapped (looseness applies li
   assert.match(html, /<ul><li><p>foo<\/p><\/li><li><p>bar<\/p><\/li><li><p>baz<\/p><\/li><\/ul>/);
 });
 
+// ── HTML blocks: real 7-type classification, not one generic close rule ───
+test('a standalone HTML comment is not silently dropped', () => {
+  // Regression: resolved (via _bd()) without ever writing anything, since
+  // "the comment closes on the same line" wasn't routed through the actual
+  // raw-HTML flush path at all.
+  assert.strictEqual(render('<!-- comment -->\n'), '<!-- comment -->');
+});
+
+test('a type-6 HTML block (e.g. <div>) ends at the next blank line, not a matching close tag', () => {
+  const html = render('<div>\n*foo*\n\n*bar*\n');
+  assert.match(html, /<em>bar<\/em>/, 'content after the blank line is regular markdown again');
+});
+
+test('a block can start with a bare closing tag', () => {
+  // Regression: a real HTML parser silently discards a closing tag with no
+  // matching open element (confirmed empirically against jsdom/insertAdjacentHTML,
+  // matching real browsers) — falls back to escaped literal text so the
+  // content isn't lost outright, per the same pattern used for inline HTML.
+  const html = render('</div>\n*foo*\n');
+  assert.doesNotMatch(html, /^<p>\s*<\/p>$/);
+  assert.match(html, /foo/);
+});
+
+test('type 1 (script/pre/style/textarea) still requires a matching closing tag, not a blank line', () => {
+  const html = render('<script>\nvar x = 1;\n\nvar y = 2;\n</script>\n');
+  assert.match(html, /<script>[\s\S]*var y = 2;[\s\S]*<\/script>/, 'the blank line inside must NOT end the block early');
+});
+
+test('an HTML comment inside a paragraph does not vanish (processing-instruction/declaration types)', () => {
+  assert.match(render('<!ELEMENT br EMPTY>\n'), /ELEMENT br EMPTY/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

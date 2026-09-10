@@ -7,7 +7,12 @@
 'use strict';
 
 // ─── Module-level constants ────────────────────────────────────────────────────
-const BLOCK_TAGS = new Set(['details','summary','figure','figcaption','aside','section','article','div','p','table','thead','tbody','tr','td','th','ul','ol','li','dl','dt','dd','form','nav','header','footer','main','blockquote','pre','hr','h1','h2','h3','h4','h5','h6']);
+// CommonMark HTML-block type 6: this exact tag-name list (not "pre" — that's
+// type 1 only) makes the block end at the next BLANK LINE, no matching
+// closing tag required.
+const HTML_BLOCK6_TAGS = new Set(['address','article','aside','base','basefont','blockquote','body','caption','center','col','colgroup','dd','details','dialog','dir','div','dl','dt','fieldset','figcaption','figure','footer','form','frame','frameset','h1','h2','h3','h4','h5','h6','head','header','hr','html','iframe','legend','li','link','main','menu','menuitem','nav','noframes','ol','optgroup','option','p','param','section','summary','table','tbody','td','tfoot','th','thead','title','tr','track','ul']);
+// Type 1: ends on a line containing the matching closing tag, not a blank line.
+const HTML_BLOCK1_TAGS = new Set(['script','pre','style','textarea']);
 const VOID_TAGS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
 
 // ─── DomStack ─────────────────────────────────────────────────────────────────
@@ -78,7 +83,8 @@ class MarkdownStreamer {
     this.footnoteDefs = {}; this.footnoteOrder = []; this.inFootnoteDef = false; this.footnoteDefId = '';
     this.abbrMap = {};
     this.defPending = null;
-    this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlTag = null;
+    this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
+    this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
 
     this.sepWatch = false; this.sepFailed = false; this.sepRowEl = null; this.sepBuf = '';
     this.needsJoinSpace = false; this.hadJoinSpace = false;
@@ -112,7 +118,7 @@ class MarkdownStreamer {
       if (this.fencePrefix === null) { this.feedCodeFenceLine(ch); return; }
       this.fencePrefix += ch; return;
     }
-    if (this.inRawHtml) { this.rawHtmlBuf += ch; return; }
+    if (this.inRawHtml) { this.rawHtmlBuf += ch; this.rawHtmlLineBuf += ch; return; }
 
     this.linePos++;
     if (this.lineStart) this.lineStart = false;
@@ -187,13 +193,22 @@ class MarkdownStreamer {
       this.resetLine(); return;
     }
     if (this.inRawHtml) {
+      const line = this.rawHtmlLineBuf;
       this.rawHtmlBuf += '\n';
-      if (!this.rawHtmlTag) {
-        const m = this.rawHtmlBuf.match(/^<([a-zA-Z][a-zA-Z0-9-]*)/);
-        this.rawHtmlTag = m ? m[1].toLowerCase() : null;
+      this.rawHtmlLineBuf = '';
+      if (this.rawHtmlEndMode === 'blank') {
+        // Types 6/7 end BEFORE the blank line — it's not part of the block,
+        // so undo the "\n" this (blank) line contributed and flush as-is.
+        if (line.trim() === '') { this.rawHtmlBuf = this.rawHtmlBuf.slice(0, -1); this.flushRawHtml(); }
+        return;
       }
-      if (this.rawHtmlTag && new RegExp('<\\/' + this.rawHtmlTag + '\\s*>$', 'i').test(this.rawHtmlBuf.trimEnd()))
-        this.flushRawHtml();
+      let closed = false;
+      if (this.rawHtmlEndMode === 'tag') closed = new RegExp('</' + this.rawHtmlCloseTag + '\\s*>', 'i').test(line);
+      else if (this.rawHtmlEndMode === 'comment') closed = line.includes('-->');
+      else if (this.rawHtmlEndMode === 'pi') closed = line.includes('?>');
+      else if (this.rawHtmlEndMode === 'decl') closed = line.includes('>');
+      else if (this.rawHtmlEndMode === 'cdata') closed = line.includes(']]>');
+      if (closed) this.flushRawHtml();
       return;
     }
 
@@ -538,19 +553,44 @@ class MarkdownStreamer {
         this._blockDefault(ch); return;
       }
 
+      // HTML block start — CommonMark defines 7 distinct types, each with
+      // its own end condition (a matching closing tag/marker for types 1-5,
+      // the next BLANK LINE for types 6-7). See _startHtmlBlock() and
+      // onNewline()'s inRawHtml handling for how each type actually closes.
       case '<': {
         if (p.length === 1) return;
-        if (p.startsWith('<!--')) {
-          if (p.endsWith('-->')) { this._bd(); return; }
-          if (p.length < 7) return;
-          this.closeBlock(); this.inRawHtml = true; this.rawHtmlBuf = p; this.rawHtmlTag = '!--';
-          this._bd(); return;
+        if (p[1] === '!') {
+          if (p.length === 2) return;
+          if (p[2] === '-') { // building toward <!--  (type 2: comment)
+            if (p.length < 4) return;
+            if (p.startsWith('<!--')) { this._startHtmlBlock('comment', null); return; }
+            this._blockDefault(ch); return;
+          }
+          if (p[2] === '[') { // building toward <![CDATA[  (type 5)
+            const want = '<![CDATA[';
+            if (p.length < want.length) {
+              if (want.startsWith(p)) return;
+              this._blockDefault(ch); return;
+            }
+            if (p.startsWith(want)) { this._startHtmlBlock('cdata', null); return; }
+            this._blockDefault(ch); return;
+          }
+          if (/[A-Z]/.test(p[2])) { this._startHtmlBlock('decl', null); return; } // type 4
+          this._blockDefault(ch); return;
         }
-        if (p.search(/[>\s/]/, 1) === -1) return;
-        const m = p.match(/^<\/?([a-zA-Z][a-zA-Z0-9-]*)/);
-        if (m && BLOCK_TAGS.has(m[1].toLowerCase())) {
-          this.closeBlock(); this.inRawHtml = true; this.rawHtmlBuf = p; this.rawHtmlTag = null;
-          this._bd(); return;
+        if (p[1] === '?') { this._startHtmlBlock('pi', null); return; } // type 3
+        if (p === '</') return; // closing tag, name not started yet — wait
+        {
+          const m = p.match(/^<\/?([a-zA-Z][a-zA-Z0-9-]*)/);
+          if (!m) { this._blockDefault(ch); return; } // not a tag at all (e.g. "<3")
+          // JS regex name-matching is greedy, so once p has a character past
+          // the matched name, that name is definitely complete (the next
+          // char, whatever it is, isn't a valid name character) — no need to
+          // separately check for a following space/">"/"/".
+          if (p.length === m[0].length) return; // still building the name, wait
+          const name = m[1].toLowerCase();
+          if (HTML_BLOCK1_TAGS.has(name)) { this._startHtmlBlock('tag', name); return; } // type 1
+          if (HTML_BLOCK6_TAGS.has(name)) { this._startHtmlBlock('blank', null); return; } // type 6
         }
         this._blockDefault(ch); return;
       }
@@ -1242,13 +1282,44 @@ class MarkdownStreamer {
   }
 
   // ── Raw HTML passthrough ───────────────────────────────────────────────────
+  // `mode`: 'comment'|'pi'|'decl'|'cdata' (types 2-5, end on a line containing
+  // the matching close marker), 'tag' (type 1, end on a line with the
+  // matching closing tag; `closeTag` names it), or 'blank' (types 6/7, end
+  // at the next blank line).
+  _startHtmlBlock(mode, closeTag) {
+    this.closeBlock();
+    this.inRawHtml = true;
+    this.rawHtmlBuf = this.pending;
+    this.rawHtmlLineBuf = this.pending;
+    this.rawHtmlEndMode = mode;
+    this.rawHtmlCloseTag = closeTag;
+    this._bd();
+  }
+
   flushRawHtml() {
+    const raw = this.rawHtmlBuf;
     try {
-      const doc = new DOMParser().parseFromString(this.rawHtmlBuf.trim(), 'text/html');
-      const body = doc.body;
-      while (body.firstChild) this.dom.current.appendChild(document.adoptNode(body.firstChild));
-    } catch(e) { this.writeText(this.rawHtmlBuf); }
-    this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlTag = null; this.resetLine();
+      // A <template>'s content parses as a plain fragment, not a full
+      // document — unlike DOMParser().parseFromString(), a standalone
+      // comment (or other content the full-document body-detection
+      // heuristic would place outside <body> entirely) lands correctly as
+      // a direct child, ready to move as-is.
+      const template = document.createElement('template');
+      template.innerHTML = raw.trim();
+      if (template.content.children.length === 0 && /^<\//.test(raw.trim())) {
+        // A block starting with a closing tag that has no matching open
+        // element anywhere is simply discarded by any real HTML parser
+        // (there's nothing to close) — CommonMark wants it passed through
+        // literally, which a DOM text node can only represent as escaped
+        // text, but that's still preferable to losing the content outright.
+        this.writeText(raw);
+      } else {
+        while (template.content.firstChild) this.dom.current.appendChild(template.content.firstChild);
+      }
+    } catch(e) { this.writeText(raw); }
+    this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
+    this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+    this.resetLine();
   }
 
   // ── Block helpers ──────────────────────────────────────────────────────────
@@ -1491,6 +1562,11 @@ class MarkdownStreamer {
       this.appendToTextNode(this.entityBuf);
       this.entityBuf = null;
     }
+    // An HTML block with no trailing blank line (or, for types 1-5, no
+    // matching close marker) before the very end of the input — a real
+    // scenario for a *streaming* renderer with content still being typed —
+    // is flushed as-is rather than left stuck mid-block forever.
+    if (this.inRawHtml) this.flushRawHtml();
 
     this.flushDefPending();
     this.flushInlinePending();
