@@ -466,6 +466,12 @@ class MarkdownStreamer {
       case '>': {
         const { level, i } = this._bqLevel(p);
         if (i === p.length) return;
+        // Wait while everything after the ">" marker(s) so far is still
+        // just whitespace — could still turn into real content, or the
+        // line could end up entirely blank (">  \n"), which must NOT open
+        // a paragraph at all (handled by onNewline's undecided-line
+        // fallback once blockDecided never became true for this line).
+        if (/^ *$/.test(p.slice(i))) return;
         this.ensureBlockquote(level);
         // Replay the content after the ">" markers through decideBlock
         // itself (not straight to inline text) so a heading, list, fence,

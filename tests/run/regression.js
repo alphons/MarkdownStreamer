@@ -722,6 +722,15 @@ test('a blank ">" line between two quoted paragraphs just separates them, no emp
   assert.strictEqual(html, '<blockquote><p>foo</p><p>bar</p></blockquote>');
 });
 
+test('a ">" line with only trailing whitespace after the marker is still blank, not a paragraph containing a space', () => {
+  assert.strictEqual(render('>\n>  \n> \n'), '<blockquote></blockquote>');
+});
+
+test('trailing whitespace on the last quoted line before a blank one does not leak into the paragraph', () => {
+  const html = render('>\n> foo\n>  \n');
+  assert.strictEqual(html, '<blockquote><p>foo</p></blockquote>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
