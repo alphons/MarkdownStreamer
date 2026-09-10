@@ -96,6 +96,7 @@ class MarkdownStreamer {
     this.needsJoinSpace = false; this.hadJoinSpace = false;
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
+    this.liAbsorb = null;
     this.pendingListBlank = false; // NOT reset in resetLine(): set at the end of
     // a blank line (after resetLine already ran for it) and consumed at the
     // start of the NEXT line, so it must survive the resetLine() in between.
@@ -157,6 +158,25 @@ class MarkdownStreamer {
         return;
       }
       this.decideBlock(ch); return;
+    }
+
+    if (this.liAbsorb) {
+      const a = this.liAbsorb;
+      if (ch === ' ' && a.extra < 3) {
+        a.extra++; a.top.contentCol++;
+        return;
+      }
+      if (ch === ' ') {
+        // 5th consecutive space after the marker: per CommonMark, only the
+        // first space is the required separator — content column snaps back
+        // to right after it, and every space from the 2nd on (already
+        // absorbed ones plus this one) is literal content instead.
+        a.top.contentCol = a.base;
+        this.liAbsorb = null;
+        for (let i = 0; i < a.extra + 1; i++) { this.onContentChar(' '); }
+        return;
+      }
+      this.liAbsorb = null;
     }
 
     if (ch === ' ') this.trailingSpaces++;
@@ -393,6 +413,7 @@ class MarkdownStreamer {
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
     this._blankBeforeNewItem = false;
+    this.liAbsorb = null;
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
@@ -628,7 +649,13 @@ class MarkdownStreamer {
           if (i === p.length) return;
           if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this._blockDefault(ch); return; }
           if (i + 1 === p.length) return;
-          if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent, p[i], parseInt(p.slice(0, i), 10), this.linePos); this._bd(); return; }
+          if (p[i + 1] === ' ') {
+            const contentCol = this.linePos;
+            this.openListItem('ol', this.lineIndent, p[i], parseInt(p.slice(0, i), 10), contentCol);
+            this._bd();
+            this.liAbsorb = { top: this.listStack[this.listStack.length - 1], base: contentCol, extra: 0 };
+            return;
+          }
           this._blockDefault(ch); return;
         }
         this._blockDefault(ch);
@@ -1290,10 +1317,22 @@ class MarkdownStreamer {
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
   openUlDecided(s, marker) {
-    const contentCol = this.linePos - s.length;
+    const base = this.linePos - s.length; // column right after marker + its 1 required space
+    const isAllSpaces = /^ *$/.test(s);
+    const contentCol = isAllSpaces ? base + s.length : base;
     this.openListItem('ul', this.lineIndent, marker, undefined, contentCol);
     this._bd();
-    for (const c of s) { this.onInlineChar(c); this.lastChar = c; }
+    if (!isAllSpaces) { for (const c of s) { this.onInlineChar(c); this.lastChar = c; } return; }
+    const top = this.listStack[this.listStack.length - 1];
+    if (s.length <= 3) {
+      if (s.length > 0) this.liAbsorb = { top, base, extra: s.length };
+    } else {
+      // 5+ spaces already seen before the decision fired: content column
+      // snaps back to right after the 1 required separator space, and every
+      // space from the 2nd on is literal content, not indentation.
+      top.contentCol = base;
+      for (let i = 0; i < s.length; i++) this.onContentChar(' ');
+    }
   }
 
   // ── Entity decoder ─────────────────────────────────────────────────────────

@@ -610,6 +610,25 @@ test('the "multiple of 3" rule is applied (6.2 rules 9/10)', () => {
   assert.match(html, /foo<em><strong>bar<\/strong><\/em>baz/);
 });
 
+// ── List item marker: spaces-after-marker absorption ───────────────────────
+// CommonMark: 1-4 spaces after a list marker are indentation, defining the
+// item's content column; extra leading spaces beyond the required one must
+// NOT leak into the item's text. 5+ spaces means only the first is the
+// separator — content column snaps back, and the rest become literal
+// content instead of indentation.
+test('extra spaces (up to 4 total) after a list marker are absorbed as indentation, not text', () => {
+  assert.strictEqual(render('-    one\n'), '<ul><li>one</li></ul>');
+});
+
+test('5+ spaces after a list marker: only 1 is the separator, the item stays tight', () => {
+  const html = render(' -    one\n\n     two\n');
+  assert.match(html, /<ul><li>one<\/li><\/ul>/);
+});
+
+test('an ordered list marker with multiple spaces absorbs them into the content column', () => {
+  assert.strictEqual(render('1.  A paragraph.\n'), '<ol><li>A paragraph.</li></ol>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
