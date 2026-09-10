@@ -740,6 +740,37 @@ test('a thematic break that ends a list does not leave the listStack stale for a
   assert.strictEqual(html, '<ul><li>foo</li></ul><hr><ul><li>bar</li></ul>');
 });
 
+// ── DOM-native code-span resolver (same two-pass idea as emphasis) ─────────
+// A backtick run commits immediately to a real <code> element so the
+// common, well-formed, streaming case still renders live — but per
+// CommonMark that only really counts once a matching-length closing run is
+// found, possibly spanning several more lines. If the enclosing block ends
+// first, _flushCodeSpans() reverts it to literal text and replays its raw
+// content through the normal pipeline, the same architecture already used
+// for unmatched emphasis delimiters (_flushEmphasis).
+test('a code span survives a line ending, converted to a single space', () => {
+  const html = render('``\nfoo\nbar  \nbaz\n``\n');
+  assert.strictEqual(html, '<p><code>foo bar   baz</code></p>');
+});
+
+test('an opening backtick run with no matching closer anywhere reverts to literal text', () => {
+  assert.strictEqual(render('`foo\n'), '<p>`foo</p>');
+});
+
+test('an unmatched single backtick does not swallow a LATER, genuinely matched pair', () => {
+  const html = render('`foo``bar``\n');
+  assert.strictEqual(html, '<p>`foo<code>bar</code></p>');
+});
+
+test('a marker char right after a code span opens correctly inside it, not lost', () => {
+  const html = render('*foo`*`\n');
+  assert.strictEqual(html, '<p>*foo<code>*</code></p>');
+});
+
+test('a backtick-fence-invalid line ("```foo``") falls back to a literal code span attempt, not a stuck-open one', () => {
+  assert.strictEqual(render('```foo``\n'), '<p>```foo</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

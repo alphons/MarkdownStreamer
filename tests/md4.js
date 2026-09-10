@@ -128,6 +128,15 @@ class MarkdownStreamer {
       this.fencePrefix += ch; return;
     }
     if (this.inRawHtml) { this.rawHtmlBuf += ch; this.rawHtmlLineBuf += ch; return; }
+    // An open inline code span (an unclosed backtick-run opener) survives a
+    // line ending — CommonMark 6.1 — so its content, including this line's
+    // OWN leading whitespace, is still fully literal code-span content, not
+    // something to run back through block-decision indentation logic
+    // (which would otherwise misread it as e.g. an indented-code trigger).
+    // onNewline() handles converting the line ending itself to a space.
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      this.onInlineChar(ch); this.lastChar = ch; return;
+    }
 
     this.linePos++;
     if (this.lineStart) this.lineStart = false;
@@ -199,6 +208,37 @@ class MarkdownStreamer {
     // otherwise only ever see the reset value, never the real one.
     this.hadJoinSpace = this.needsJoinSpace;
     this.needsJoinSpace = false;
+
+    // A still-pending backtick run (e.g. the line ends right after "``",
+    // with no following character to resolve it yet) needs resolving
+    // FIRST — it may be about to open a brand new code span, which must
+    // then be caught by the check right below instead of being torn down
+    // again before it even holds any content.
+    if (this.inlinePending && this.inlinePending[0] === '`') this.flushInlinePending();
+
+    // An open inline code span survives the line ending — CommonMark 6.1
+    // converts it to a single space in the span's content, rather than
+    // closing the span (matches processChar()'s matching bypass for the
+    // continuation line's own leading whitespace). Left open for however
+    // many further lines it takes to find a matching-length closer, or
+    // until the enclosing block itself closes — see _flushCodeSpans(),
+    // which reverts it to literal text if no closer is ever found.
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      // A run of closing backticks sitting right at end-of-line, not yet
+      // confirmed to be the full matching length (it could still continue
+      // on... no — a line ending always terminates a backtick run either
+      // way), closes the span if it's exactly the right length, else is
+      // literal content — same logic as the old post-EOL check this
+      // replaces, just run BEFORE appending the line-ending space so nei-
+      // ther gets lost or misordered.
+      if (this.codeCloseRun) {
+        if (this.codeCloseRun === this.dom.current._mdMarker.length) { this._closeCodeSpan(); this.codeCloseRun = 0; this.resetLine(); return; }
+        this.appendToTextNode('`'.repeat(this.codeCloseRun)); this.codeCloseRun = 0;
+      }
+      this.appendToTextNode(' ');
+      this.resetLine(); return;
+    }
+
     if (this.defPending) { this.flushDefPending(); this.resetLine(); return; }
 
     if (this.sepWatch && this.inTable) {
@@ -387,17 +427,18 @@ class MarkdownStreamer {
       this.entityBuf = null;
     }
 
-    // A counted run of closing backticks (see the inline-code branch of
-    // onInlineChar) only gets resolved once a following character arrives
-    // to confirm the run's true length — a run sitting right at end-of-line
-    // never gets that confirming character, so resolve it here instead.
-    if (this.codeCloseRun && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
-      if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
-      else this.appendToTextNode('`'.repeat(this.codeCloseRun));
-      this.codeCloseRun = 0;
-    }
-
     this.flushInlinePending();
+    // That flush may have JUST opened a brand new code span — most notably
+    // a "``"-style opener sitting at the very start of a line, which is
+    // only disambiguated from a code FENCE (3+ backticks) at the block
+    // level, so it doesn't reach inline handling (and this check) until
+    // the undecided-line fallback above has already run. Same preserve-
+    // across-the-newline treatment as the early check at the top of this
+    // function, which only catches an ALREADY-open span from a prior line.
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      this.appendToTextNode(' ');
+      this.resetLine(); return;
+    }
     if (this.linkState === 'expect_paren') {
       const a = this.dom.find('A');
       if (a && !a.href) { a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a); }
@@ -877,7 +918,19 @@ class MarkdownStreamer {
     }
 
     if (this.isMarkerChar(ch)) {
-      if (this.inlinePending && ch !== this.inlinePending[0]) this.resolveInlinePending(null, ch);
+      if (this.inlinePending && ch !== this.inlinePending[0]) {
+        this.resolveInlinePending(null, ch);
+        // Resolving the PREVIOUS marker may have just opened a code span
+        // right here (e.g. a backtick run immediately followed by another
+        // marker char, "`*`") — re-enter onInlineChar for `ch` so it's now
+        // handled by the dedicated code-content branch (checked at the
+        // very top of this function) instead of being wrongly queued below
+        // as a fresh marker attempt positioned INSIDE that code span.
+        if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+          this.onInlineChar(ch);
+          return;
+        }
+      }
       if (!this.inlinePending) this.pendingDelimBefore = this.lastChar;
       this.inlinePending += ch;
       this.prevCharWs = false; return;
@@ -901,8 +954,16 @@ class MarkdownStreamer {
         && /[^ ]/.test(text.data)) {
       text.data = text.data.slice(1, -1);
     }
+    code._mdMarker = null; // successfully matched — no longer an "open" span for _flushCodeSpans()
     this.dom.pop();
     this.textNode = null;
+    // A code span can close partway through a line that RESUMED after
+    // surviving one or more earlier line endings (see onNewline()) — that
+    // resume bypasses normal block-decision entirely (processChar()'s
+    // top-of-function guard), leaving blockDecided false even though we're
+    // still mid-paragraph. Restore it so the rest of this line's characters
+    // go back through ordinary inline content handling, not decideBlock().
+    this.blockDecided = true;
   }
 
   // CommonMark 6.6 open-tag grammar: tagname followed by zero or more
@@ -1148,6 +1209,7 @@ class MarkdownStreamer {
     this.lastChar = undefined; this.prevCharWs = true; this.linkState = null;
     for (const ch of raw) { this.onInlineChar(ch); this.lastChar = ch; }
     this.flushInlinePending();
+    this._flushCodeSpans(scratch);
     this._flushEmphasis(scratch);
     const text = scratch.textContent;
     this.dom.current = saved.current; this.textNode = saved.textNode; this.inlinePending = saved.inlinePending;
@@ -1304,6 +1366,57 @@ class MarkdownStreamer {
     this.textNode = null;
   }
 
+  // Same idea as _flushEmphasis, for code spans: an opening backtick run
+  // commits immediately to a real <code> element (so the common,
+  // well-formed, streaming case renders live) with everything after it
+  // fed in as literal content — but per CommonMark that opener only really
+  // counts once a matching-length closing run is found. If the block ends
+  // (see closeBlock() and the same other call points as _flushEmphasis)
+  // with the span still open, it was never really a code span: unwrap it
+  // back to its literal opening backticks + raw content, and replay THAT
+  // through the normal inline pipeline so anything inside it that should
+  // have been ordinary markup (emphasis, links, entities, ...) is now
+  // actually processed as such — must run BEFORE _flushEmphasis, since the
+  // replay can itself introduce new emphasis placeholders to sweep.
+  _flushCodeSpans(root) {
+    if (!root || root.nodeType !== 1) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let openCode = null, n;
+    while ((n = walker.nextNode())) { if (n.nodeName === 'CODE' && n._mdMarker) { openCode = n; break; } }
+    if (!openCode) return;
+    const marker = openCode._mdMarker;
+    const raw = openCode.textContent;
+    const parent = openCode.parentNode;
+    openCode.remove();
+    this.dom.current = parent;
+    this.textNode = null;
+    // The opening backticks themselves are written directly as literal
+    // text (NOT replayed through onInlineChar) — replaying them would hit
+    // the same "any backtick run optimistically opens a code span" logic
+    // that created this exact situation, recreating another open (and
+    // still ultimately unmatched) code element instead of actually
+    // reverting to text. Only the CONTENT after them is replayed through
+    // the normal pipeline, since it may contain real markdown (emphasis,
+    // links, entities, or even a genuinely valid nested backtick pair)
+    // that was wrongly suppressed while this was mistaken for a code span.
+    this.appendToTextNode(marker);
+    for (const c of raw) { this.onInlineChar(c); this.lastChar = c; }
+    this.flushInlinePending();
+    // A counted run of closing backticks confirmed only by a character
+    // that never came (raw ended exactly on it) needs the same resolution
+    // finalize()/onNewline() give it elsewhere — same logic, replicated
+    // here since the replay is a self-contained inline-parsing pass.
+    if (this.codeCloseRun && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
+      else this.appendToTextNode('`'.repeat(this.codeCloseRun));
+      this.codeCloseRun = 0;
+    }
+    // The replay can itself open (and leave open) a new code span — e.g.
+    // raw content containing its own single stray backtick — so resolve
+    // that too before returning.
+    this._flushCodeSpans(root);
+  }
+
   // Called when a block's inline content is done (see closeBlock() and the
   // various paragraph/list-item/definition close points): any delimiter
   // placeholder left anywhere in `root`'s subtree — including nested inside
@@ -1382,6 +1495,20 @@ class MarkdownStreamer {
     }
     const closeEl = this.findInlineClose(marker);
     if (closeEl !== null) { this._pop(closeEl); this.textNode = null; }
+    else if (baseChar === '`') {
+      // Unlike the other non-emphasis markers, a backtick run CAN validly
+      // open right here even at this "abrupt boundary" (this function is
+      // only ever called at a genuine end-of-scope: end of line, end of a
+      // link label, ...) — CommonMark code spans may span multiple lines,
+      // so a "``" sitting at end-of-line (most commonly: right at the very
+      // START of a line, where it doesn't reach inline handling at all
+      // until the block-level fence-vs-span ambiguity — 3+ backticks needed
+      // for a fence — is resolved) must still be able to open one here,
+      // same as resolveInlinePending() already does mid-line. Stays open
+      // until a matching closer is found later, or _flushCodeSpans()
+      // reverts it to literal text if the block ends first.
+      const el = this.dom.push('code'); el._mdMarker = marker; this.textNode = null;
+    }
     else this.writeText(marker);
   }
 
@@ -1596,6 +1723,10 @@ class MarkdownStreamer {
     this._trimIndentCode();
     this.flushInlinePending();
     if (this.bareUrlOpen) this.closeBareUrl();
+    // Must run BEFORE _popMarkers(), which would otherwise forcibly close
+    // (and hide) a still-open code span before this gets a chance to
+    // inspect and possibly unwrap it.
+    this._flushCodeSpans(this.lastBlockEl);
     this._popMarkers();
     this.textNode = null;
     this._flushEmphasis(this.lastBlockEl);
@@ -1828,6 +1959,16 @@ class MarkdownStreamer {
       else this.appendToTextNode('`'.repeat(this.codeCloseRun));
       this.codeCloseRun = 0;
     }
+    // onNewline() speculatively adds a space to an open code span for every
+    // line ending, in case content continues on a following line — but the
+    // very last line ending in the document has no such continuation, so
+    // if the span is STILL open right here at EOF, that final space was
+    // never really part of anything and must not survive into the literal
+    // text _flushCodeSpans() is about to revert this span to.
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      const t = this.dom.current.firstChild;
+      if (t && t.nodeType === 3 && t.data.endsWith(' ')) t.data = t.data.slice(0, -1);
+    }
     if (this.autolinkBuf !== null) {
       this.appendToTextNode('<' + this.autolinkBuf);
       this.autolinkBuf = null; this.autolinkQuote = null;
@@ -1848,8 +1989,11 @@ class MarkdownStreamer {
     if (this.bareUrlOpen) this.closeBareUrl();
     this.textNode = null;
     // Catch-all: the very last block never gets explicitly closed by a
-    // NEW block opening after it, so any delimiter placeholder anywhere in
-    // the whole document that's still unmatched is swept here.
+    // NEW block opening after it, so any still-open code span or delimiter
+    // placeholder anywhere in the whole document is resolved/swept here
+    // (code spans first — the unwrap can itself introduce new delimiter
+    // placeholders for _flushEmphasis to then sweep).
+    this._flushCodeSpans(this.root);
     this._flushEmphasis(this.root);
 
     // A hard break needs a following line to break *to* — one at the very
