@@ -506,6 +506,34 @@ test('an unindented thematic break after a list item ends the list, not nests in
   assert.match(html, /<ul><li>Foo<\/li><\/ul><hr>/);
 });
 
+// ── Loose lists and multi-paragraph list items ─────────────────────────────
+test('a blank line between two list items makes the list loose (both wrapped in <p>)', () => {
+  const html = render('- a\n\n- b\n');
+  assert.match(html, /<ul><li><p>a<\/p><\/li><li><p>b<\/p><\/li><\/ul>/);
+});
+
+test('a tight list (no blank lines) is not wrapped in <p>', () => {
+  assert.match(render('- a\n- b\n'), /<ul><li>a<\/li><li>b<\/li><\/ul>/);
+});
+
+test('an indented continuation after a blank line is a second paragraph in the SAME item', () => {
+  assert.match(render('- a\n\n  b\n'), /<ul><li><p>a<\/p><p>b<\/p><\/li><\/ul>/);
+});
+
+test('a blank line followed by dedented, unrelated content ends the list (stays tight, no <p>)', () => {
+  // Regression: marking the list loose as soon as ANY blank line appears
+  // inside an item was too eager — a blank line that's just the list's
+  // natural end (followed by content that dedents out entirely, not a new
+  // item or a continuation) must NOT retroactively wrap the single item.
+  const html = render('- one\n\n two\n');
+  assert.match(html, /<ul><li>one<\/li><\/ul><p>two<\/p>/);
+});
+
+test('three items separated by blank lines all get wrapped (looseness applies list-wide)', () => {
+  const html = render('- foo\n\n- bar\n\n\n- baz\n');
+  assert.match(html, /<ul><li><p>foo<\/p><\/li><li><p>bar<\/p><\/li><li><p>baz<\/p><\/li><\/ul>/);
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

@@ -84,6 +84,10 @@ class MarkdownStreamer {
     this.needsJoinSpace = false; this.hadJoinSpace = false;
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
+    this.pendingListBlank = false; // NOT reset in resetLine(): set at the end of
+    // a blank line (after resetLine already ran for it) and consumed at the
+    // start of the NEXT line, so it must survive the resetLine() in between.
+    this._blankBeforeNewItem = false;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -135,6 +139,11 @@ class MarkdownStreamer {
         return;
       }
       this.inIndentCode = false; this.pendingIndentNL = 0;
+      if (this.pendingListBlank) {
+        this.pendingListBlank = false;
+        this._resolveListBlankContinuation(ch);
+        return;
+      }
       this.decideBlock(ch); return;
     }
 
@@ -249,9 +258,25 @@ class MarkdownStreamer {
 
     if (!this.blockDecided) {
       const tag = this.dom.currentTag();
-      if      (tag === 'P')  { this.dom.pop(); this.textNode = null; this.lastBlockEl = null; }
-      else if (tag === 'LI') { this.dom.toRoot(); this.listStack = []; this.textNode = null; this.lastBlockEl = null; }
-      else if (tag === 'DD') { this.dom.toRoot(); this.textNode = null; this.lastBlockEl = null; }
+      const li = this.dom.find('LI');
+      if (li && (tag === 'P' || tag === 'LI')) {
+        // A blank line inside a list item doesn't necessarily end the list —
+        // it might just separate this item's paragraphs, or separate this
+        // item from the next one (which is what makes the whole list
+        // "loose": every item's content gets wrapped in <p>, even single-
+        // paragraph ones) — OR the list might simply be ending here, with
+        // unrelated content following at a shallower indent, in which case
+        // this blank line does NOT make it loose. Stay positioned at the LI;
+        // _resolveListBlankContinuation (called for the next line) decides
+        // which case this is, and marks looseness only when warranted.
+        if (tag === 'P') this.dom.pop();
+        this.textNode = null; this.lastBlockEl = null;
+        this.pendingListBlank = true;
+      } else if (tag === 'P') {
+        this.dom.pop(); this.textNode = null; this.lastBlockEl = null;
+      } else if (tag === 'DD') {
+        this.dom.toRoot(); this.textNode = null; this.lastBlockEl = null;
+      }
       this.resetLine(); return;
     }
 
@@ -343,6 +368,7 @@ class MarkdownStreamer {
     this.taskCheckBuf = null; this.taskCheckDone = false;
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
+    this._blankBeforeNewItem = false;
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
@@ -553,7 +579,7 @@ class MarkdownStreamer {
           if (i === p.length) return;
           if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this._blockDefault(ch); return; }
           if (i + 1 === p.length) return;
-          if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent, p[i], parseInt(p.slice(0, i), 10)); this._bd(); return; }
+          if (p[i + 1] === ' ') { this.openListItem('ol', this.lineIndent, p[i], parseInt(p.slice(0, i), 10), this.linePos); this._bd(); return; }
           this._blockDefault(ch); return;
         }
         this._blockDefault(ch);
@@ -1118,7 +1144,12 @@ class MarkdownStreamer {
 
   // ── Small shared helpers ───────────────────────────────────────────────────
   makeHr()              { this.closeBlock(); this.dom.current.appendChild(document.createElement('hr')); this.lastBlockEl = null; }
-  fallbackToParagraph() { this.closeBlock(); this.openParagraph(); this.blockDecided = true; this.feedPendingAsInline(); }
+  // Both call sites only reach here once it's already established we're NOT
+  // continuing an open P/LI/DD — i.e. any list we were in has genuinely
+  // ended, so listStack is cleared here too (otherwise it would go stale:
+  // still pointing at indent/type info for a list no longer on the current
+  // dom path, corrupting a later, unrelated list's nesting decisions).
+  fallbackToParagraph() { this.closeBlock(); this.listStack = []; this.openParagraph(); this.blockDecided = true; this.feedPendingAsInline(); }
 
   // Used by onNewline's end-of-line "nothing matched" fallback: continue
   // the already-open paragraph/list-item/definition (with the usual
@@ -1135,7 +1166,12 @@ class MarkdownStreamer {
   flushDefPending()     { if (!this.defPending) return; const d = this.defPending; if (d.type === 'ref' && !(d.key in this.refDefs)) this.refDefs[d.key] = this._parseUrlBuf(d.value); if (d.type === 'abbr') this.abbrMap[d.key] = d.value.trim(); this.defPending = null; }
   startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
-  openUlDecided(s, marker) { this.openListItem('ul', this.lineIndent, marker); this._bd(); for (const c of s) { this.onInlineChar(c); this.lastChar = c; } }
+  openUlDecided(s, marker) {
+    const contentCol = this.linePos - s.length;
+    this.openListItem('ul', this.lineIndent, marker, undefined, contentCol);
+    this._bd();
+    for (const c of s) { this.onInlineChar(c); this.lastChar = c; }
+  }
 
   // ── Entity decoder ─────────────────────────────────────────────────────────
   decodeEntity(raw) {
@@ -1290,17 +1326,21 @@ class MarkdownStreamer {
   // `marker`: the bullet char ('-','+','*') or ordered delimiter ('.',')')
   // — a change in marker, not just list type, starts a new list per
   // CommonMark (e.g. "- a\n+ b" is two separate <ul>s, not one).
-  openListItem(type, indent, marker, startNum) {
+  // `contentCol`: the column where this item's content starts (right after
+  // the marker + its required space) — used to tell a paragraph-continuation
+  // of THIS item (indented at least that far, after a blank line) apart from
+  // content that dedents back out of the list entirely.
+  openListItem(type, indent, marker, startNum, contentCol) {
     this._popMarkers();
     this.textNode = null;
     if (this.listStack.length === 0) {
       const tag = this.dom.currentTag();
       if (!['UL','OL','LI'].includes(tag)) this.closeBlock();
-      this.pushNewList(type, indent, marker, startNum);
+      this.pushNewList(type, indent, marker, startNum, contentCol);
     } else {
       const top = this.listStack[this.listStack.length - 1];
       if (indent > top.indent) {
-        this.pushNewList(type, indent, marker, startNum);
+        this.pushNewList(type, indent, marker, startNum, contentCol);
       } else {
         if (indent < top.indent) {
           while (this.listStack.length > 1 && this.listStack[this.listStack.length - 1].indent > indent) {
@@ -1313,19 +1353,59 @@ class MarkdownStreamer {
         const now = this.listStack[this.listStack.length - 1];
         if (now.type !== type || now.marker !== marker) {
           if (['UL','OL'].includes(this.dom.currentTag())) this.dom.pop();
-          this.listStack.pop(); this.pushNewList(type, indent, marker, startNum);
+          this.listStack.pop(); this.pushNewList(type, indent, marker, startNum, contentCol);
+        } else {
+          now.contentCol = contentCol;
+          // This new item follows a blank line and reuses the SAME list
+          // (not a fresh one) — that blank line separated two items of this
+          // list, which is exactly what makes it loose.
+          if (this._blankBeforeNewItem) this._markListLoose(now);
         }
       }
     }
+    this._blankBeforeNewItem = false;
     const li = this.dom.push('li'); this.lastBlockEl = li;
     this.taskCheckBuf = ''; this.taskCheckDone = false;
   }
 
-  pushNewList(type, indent, marker, startNum) {
+  pushNewList(type, indent, marker, startNum, contentCol) {
     const list = this.dom.push(type);
     if (type === 'ol' && startNum !== undefined && startNum !== 1) list.setAttribute('start', String(startNum));
-    this.listStack.push({ el: list, type, indent, marker });
+    this.listStack.push({ el: list, type, indent, marker, contentCol, loose: false });
   }
+
+  // Called for the first character of the line right after a blank line that
+  // occurred while inside a list item (see the blank-line handling in
+  // onNewline). Decides whether this line is (a) indented enough to be a new
+  // paragraph continuing the SAME item, or (b) anything else — in which case
+  // only the current <li> is closed (NOT the surrounding <ul>/<ol>, and NOT
+  // the listStack), so decideBlock's own marker detection — which already
+  // knows how to compare a new marker's indent against each list level — can
+  // correctly tell a new sibling item apart from content that truly exits
+  // the list (that content ends up going through _blockDefault(), sees
+  // dom.currentTag() is no longer P/LI/DD, and calls fallbackToParagraph(),
+  // which is what actually clears listStack once the list is genuinely done).
+  _resolveListBlankContinuation(ch) {
+    const top = this.listStack[this.listStack.length - 1];
+    if (top && this.lineIndent >= top.contentCol) {
+      // A second paragraph within the same item: this blank line genuinely
+      // separates two blocks that are both part of the list, so it's loose.
+      this._markListLoose(top);
+      this.lineIndent = 0; this.leadingWsChars = 0;
+      this.openParagraph();
+      this.decideBlock(ch);
+      return;
+    }
+    if (this.dom.currentTag() === 'LI') this.dom.pop();
+    this.lastBlockEl = null;
+    // Not (yet) known whether this dedents fully out of the list or is a new
+    // sibling item — openListItem() marks looseness itself if it turns out
+    // to be the latter, reusing the same list.
+    this._blankBeforeNewItem = true;
+    this.decideBlock(ch);
+  }
+
+  _markListLoose(entry) { entry.loose = true; entry.el.dataset.loose = '1'; }
 
   // ── Setext ─────────────────────────────────────────────────────────────────
   resolveSetext(tag) {
@@ -1463,6 +1543,34 @@ class MarkdownStreamer {
 
     if (Object.keys(this.abbrMap).length > 0) this.applyAbbrs(this.root);
     this.renderFootnotes();
+    this._applyLooseLists();
+  }
+
+  // A list is "loose" if a blank line ever appeared between/within its
+  // items (marked live in onNewline's blank-line-in-list handling via
+  // data-loose). Per CommonMark, a loose list wraps EVERY item's content in
+  // <p> — including items that individually had no blank line and were
+  // therefore built without one at the time. Applied once at the end, since
+  // an item built early can only be retroactively found "loose" by a blank
+  // line appearing LATER, elsewhere in the same list.
+  _applyLooseLists() {
+    const BLOCK_CHILD_TAGS = new Set(['P','UL','OL','PRE','BLOCKQUOTE','TABLE','H1','H2','H3','H4','H5','H6','HR','DL']);
+    this.root.querySelectorAll('ul[data-loose], ol[data-loose]').forEach((list) => {
+      list.removeAttribute('data-loose');
+      for (const li of list.children) {
+        if (li.tagName !== 'LI') continue;
+        const leading = [];
+        for (const child of li.childNodes) {
+          if (child.nodeType === 1 && BLOCK_CHILD_TAGS.has(child.tagName)) break;
+          leading.push(child);
+        }
+        if (leading.length === 0) continue;
+        if (leading.every((n) => n.nodeType === 3 && !n.data.trim())) continue; // whitespace-only, nothing to wrap
+        const p = document.createElement('p');
+        li.insertBefore(p, leading[0]);
+        for (const node of leading) p.appendChild(node);
+      }
+    });
   }
 
   applyAbbrs(root) {
