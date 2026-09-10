@@ -1386,7 +1386,11 @@ class MarkdownStreamer {
   }
 
   // ── Small shared helpers ───────────────────────────────────────────────────
-  makeHr()              { this.closeBlock(); this.dom.current.appendChild(document.createElement('hr')); this.lastBlockEl = null; }
+  // If closing whatever was open left dom.current outside any list item,
+  // the list (if any) has genuinely ended — clear listStack so it doesn't
+  // go stale (a later, unrelated list marker would otherwise try to reuse
+  // it). Left alone when the hr is nested INSIDE a still-open list item.
+  makeHr()              { this.closeBlock(); if (this.dom.currentTag() !== 'LI') this.listStack = []; this.dom.current.appendChild(document.createElement('hr')); this.lastBlockEl = null; }
   // Both call sites only reach here once it's already established we're NOT
   // continuing an open P/LI/DD — i.e. any list we were in has genuinely
   // ended, so listStack is cleared here too (otherwise it would go stale:

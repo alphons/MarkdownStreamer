@@ -735,6 +735,11 @@ test('a genuinely blank (unprefixed) line ends the blockquote, not just its curr
   assert.strictEqual(render('> foo\n\n> bar\n'), '<blockquote><p>foo</p></blockquote><blockquote><p>bar</p></blockquote>');
 });
 
+test('a thematic break that ends a list does not leave the listStack stale for a later list', () => {
+  const html = render('- foo\n***\n- bar\n');
+  assert.strictEqual(html, '<ul><li>foo</li></ul><hr><ul><li>bar</li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
