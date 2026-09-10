@@ -271,11 +271,15 @@ class MarkdownStreamer {
       } else if (p[0] === '>') {
         const { level } = this._bqLevel(p);
         // A blank line inside the blockquote (just ">" markers, no content)
-        // ends the current paragraph, same as a top-level blank line.
+        // ends the current paragraph, same as a top-level blank line — but
+        // does NOT start a new one immediately (that produced a stray empty
+        // <p></p> for every blank quoted line, even a lone ">" with nothing
+        // else in the quote at all). A fresh paragraph is opened lazily,
+        // the normal way (via fallbackToParagraph()), only once real
+        // content actually follows.
         if (level > 0) {
           if (this.dom.currentTag() === 'P') this.dom.pop();
           this.ensureBlockquote(level);
-          this.openParagraph();
         }
       } else if ((p[0] === '`' || p[0] === '~') && p.length >= 3 && p.split('').every(c => c === p[0])) {
         this.closeBlock(); this.inCodeFence = true; this.fenceChar = p[0];

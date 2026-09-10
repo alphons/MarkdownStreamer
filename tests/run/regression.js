@@ -713,6 +713,15 @@ test('an email autolink with an invalid character (e.g. backslash) is not a vali
   assert.strictEqual(html, '<p>&lt;foo+@bar.example.com&gt;</p>');
 });
 
+test('a lone blank ">" line does not create a stray empty paragraph', () => {
+  assert.strictEqual(render('>\n'), '<blockquote></blockquote>');
+});
+
+test('a blank ">" line between two quoted paragraphs just separates them, no empty <p> between', () => {
+  const html = render('> foo\n>\n> bar\n');
+  assert.strictEqual(html, '<blockquote><p>foo</p><p>bar</p></blockquote>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
