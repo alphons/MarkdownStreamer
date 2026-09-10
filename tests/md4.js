@@ -2022,11 +2022,22 @@ class MarkdownStreamer {
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
   openUlDecided(s, marker) {
     const base = this.linePos - s.length; // column right after marker + its 1 required space
-    const isAllSpaces = /^ *$/.test(s);
-    const contentCol = isAllSpaces ? base + s.length : base;
+    // `s` can be a MIX of already-buffered extra spaces followed by the
+    // first real content character (decideBlock() often only commits once
+    // it sees that first non-space char, e.g. "-  foo" decides right at
+    // "f", with s = "  f") — only the leading space RUN is indentation to
+    // absorb; the rest is real content, and must not be replayed as
+    // literal leading whitespace in front of it.
+    const leadWsMatch = s.match(/^ */)[0];
+    const isAllSpaces = leadWsMatch.length === s.length;
+    const contentCol = base + leadWsMatch.length;
     this.openListItem('ul', this.lineIndent, marker, undefined, contentCol);
     this._bd();
-    if (!isAllSpaces) { for (const c of s) { this.onInlineChar(c); this.lastChar = c; } return; }
+    if (!isAllSpaces) {
+      const rest = s.slice(leadWsMatch.length);
+      for (const c of rest) { this.onInlineChar(c); this.lastChar = c; }
+      return;
+    }
     const top = this.listStack[this.listStack.length - 1];
     if (s.length <= 3) {
       if (s.length > 0) this.liAbsorb = { top, base, extra: s.length };

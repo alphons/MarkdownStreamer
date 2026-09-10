@@ -969,6 +969,10 @@ test('a 4+ indented ATX heading marker after an open paragraph is lazy-continuat
   assert.strictEqual(render('foo\n    # bar\n'), '<p>foo # bar</p>');
 });
 
+test('extra spaces buffered together with the first content character are absorbed, not kept as a leading space', () => {
+  assert.strictEqual(render('-  foo\n\n   bar\n'), '<ul><li><p>foo</p><p>bar</p></li></ul>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;
