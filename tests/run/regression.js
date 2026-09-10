@@ -965,6 +965,10 @@ test('a blockquote nested inside a list item does not corrupt the list for a lat
   assert.match(html, /<li>a<blockquote><p>b<\/p><\/blockquote><\/li><li>c<\/li>/);
 });
 
+test('a 4+ indented ATX heading marker after an open paragraph is lazy-continuation text, not a heading', () => {
+  assert.strictEqual(render('foo\n    # bar\n'), '<p>foo # bar</p>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

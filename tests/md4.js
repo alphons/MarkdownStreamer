@@ -241,7 +241,7 @@ class MarkdownStreamer {
       // deliberate — see _ascendToLI() above, not a real "still
       // continuing a paragraph" case) must not be allowed to interrupt it.
       if (!closedListRelativeCode && this.lineIndent >= 4 && this.dom.currentTag() === 'P'
-          && /^[-*+0-9]$/.test(ch)) {
+          && /^[-*+0-9#]$/.test(ch)) {
         this.pending += ch; // _continueOrFallback() feeds `this.pending`, not `ch` directly
         // _continueOrFallback() checks hadJoinSpace, which is normally
         // promoted from needsJoinSpace at the top of onNewline() — but
