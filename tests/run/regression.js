@@ -818,6 +818,19 @@ test('type 7 ends at the next blank line, leaving later content as normal markdo
   assert.match(html, /<em>foo<\/em>/);
 });
 
+test('indented code following a blank line inside a list item is recognized (not just a plain paragraph)', () => {
+  const html = render('- foo\n\n      bar\n');
+  assert.strictEqual(html, '<ul><li><p>foo</p><pre><code>bar\n</code></pre></li></ul>');
+});
+
+test('an ordered list marker may start with "0"', () => {
+  assert.strictEqual(render('0. ok\n'), '<ol start="0"><li>ok</li></ol>');
+});
+
+test('an ordered list marker strips leading zeros from its start number', () => {
+  assert.strictEqual(render('003. ok\n'), '<ol start="3"><li>ok</li></ol>');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

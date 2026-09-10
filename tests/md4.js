@@ -153,6 +153,27 @@ class MarkdownStreamer {
       if ((ch === ' ' || ch === '\t') && this.linePos === this.leadingWsChars + 1) {
         this.leadingWsChars++;
         this.lineIndent = ch === '\t' ? (Math.floor(this.lineIndent / 4) + 1) * 4 : this.lineIndent + 1;
+        // Indented code WITHIN a list item, on the line right after a blank
+        // one (pendingListBlank — dom.current is already sitting at the
+        // <li> itself, not popped): the trigger column is the item's own
+        // content column + 4, not a flat 4 from the start of the line —
+        // opened as a direct child of the <li>, skipping closeBlock()'s
+        // top-level _popToBlockContainer() dance, which would pop OUT of
+        // the <li> entirely (there's nothing else open below it to close).
+        const top = this.listStack[this.listStack.length - 1];
+        if (this.pendingListBlank && top && this.lineIndent >= top.contentCol + 4) {
+          this._markListLoose(top);
+          if (!this.inIndentCode) {
+            const pre = this.dom.push('pre');
+            const code = document.createElement('code');
+            pre.appendChild(code);
+            this.textNode = document.createTextNode(''); code.appendChild(this.textNode);
+            this.inIndentCode = true; this.lastBlockEl = pre;
+          }
+          this.pendingListBlank = false;
+          this._bd(); this.lineIndent = 0;
+          return;
+        }
         if (this.lineIndent >= 4 && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
           if (!this.inIndentCode) {
             this.closeBlock();
@@ -752,8 +773,9 @@ class MarkdownStreamer {
       }
 
       default:
-        // Ordered list
-        if (p[0] >= '1' && p[0] <= '9') {
+        // Ordered list — CommonMark allows any digit 0-9 to start the
+        // number (start values 0 through 999999999), not just 1-9.
+        if (p[0] >= '0' && p[0] <= '9') {
           let i = 1;
           while (i < p.length && p[i] >= '0' && p[i] <= '9') i++;
           if (i === p.length) return;
