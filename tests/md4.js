@@ -79,7 +79,7 @@ class MarkdownStreamer {
     this.bareUrlBuf = null; this.bareUrlOpen = false; this.prevCharWs = true;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.refDefs = {};
-    this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
+    this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null; this.indentCodeInBlockquote = false;
     this.fenceChar = '`'; this.fencePrefix = ''; this.closingFenceBuf = null; this.fenceLineHasContent = false;
     this.fenceOpenIndent = 0; this.fenceLineIndent = 0; this.fenceLineIndentDone = false;
     this.inTable = false; this.tableHeadDone = false; this.tableColAlign = [];
@@ -164,6 +164,19 @@ class MarkdownStreamer {
     this.linePos++;
     if (this.lineStart) this.lineStart = false;
 
+    // A blockquote-relative indented code block (see case '>':) can only
+    // ever be CONTINUED by a line that itself starts with ">" — that's
+    // the marker CommonMark requires before a quoted line's own content-
+    // indentation even begins. A line with anything else as its very
+    // first character (most commonly more literal leading spaces, which
+    // the generic indent-prologue just below would otherwise happily
+    // keep feeding into the same still-open code block, unaware it
+    // belongs to a blockquote this line never actually continues) always
+    // ends it — closeBlock() resets this.inIndentCode itself.
+    if (!this.blockDecided && this.linePos === 1 && this.indentCodeInBlockquote && ch !== '>') {
+      this.closeBlock();
+    }
+
     if (!this.blockDecided) {
       // A tab, for indentation purposes, advances to the next multiple-of-4
       // column rather than counting as a single space (CommonMark: tabs
@@ -240,7 +253,7 @@ class MarkdownStreamer {
       // getting a fresh one, merging it right back into the code block's
       // content instead of becoming its own separate block.
       if (closedListRelativeCode) { this._ascendToLI(); this.textNode = null; }
-      this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
+      this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null; this.indentCodeInBlockquote = false;
       if (this.pendingListBlank) {
         this.pendingListBlank = false;
         this._resolveListBlankContinuation(ch, true);
@@ -865,15 +878,41 @@ class MarkdownStreamer {
         // fallback once blockDecided never became true for this line).
         if (/^ *$/.test(p.slice(i))) return;
         this.ensureBlockquote(level);
+        this.pending = ''; this.blockDecided = false;
+        this._inBlockquoteContent = true;
+        const rest = p.slice(i);
+        // Indented code (CommonMark 4.4) applies to blockquote content
+        // relative to right after the ">" marker(s), same 4-space rule
+        // as at the top level — but the generic per-character replay
+        // just below calls decideBlock()/onContentChar() directly, never
+        // through processChar()'s own leading-whitespace/indent tracking
+        // prologue, so "    foo" here was never recognized as code at
+        // all (e.g. ">     foo\n" fell through as an ordinary paragraph
+        // with literal leading spaces). Checked once, up front, the same
+        // way this whole replay only ever fires once per line (see the
+        // comment below): can't interrupt an open P/LI/DD, same as the
+        // top-level rule.
+        const leadWs = rest.match(/^ */)[0].length;
+        if (leadWs >= 4 && !/^ *$/.test(rest) && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
+          this.closeBlock();
+          const pre = this.dom.push('pre');
+          const code = document.createElement('code');
+          pre.appendChild(code);
+          this.textNode = document.createTextNode(rest.slice(4));
+          code.appendChild(this.textNode);
+          this.inIndentCode = true; this.lastBlockEl = pre;
+          this.indentCodeInBlockquote = true;
+          this._bd();
+          this.lastChar = rest[rest.length - 1];
+          return;
+        }
         // Replay the content after the ">" markers through decideBlock
         // itself (not straight to inline text) so a heading, list, fence,
         // etc. inside a blockquote is recognized as one, not forced into a
         // paragraph. If dom.current is still an open P/LI/DD (ensureBlockquote
         // only resets when the quote depth actually changed), the normal
         // continuation checks in _blockDefault() etc. keep it open as usual.
-        this.pending = ''; this.blockDecided = false;
-        this._inBlockquoteContent = true;
-        for (const c of p.slice(i)) {
+        for (const c of rest) {
           if (this.blockDecided) {
             if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
             this.onContentChar(c);
@@ -2758,7 +2797,7 @@ class MarkdownStreamer {
     }
     if (this.inTable) { this.inTable = false; this.tableHeadDone = false; this.inCell = false; this.tableColAlign = []; this.tableColIndex = 0; }
     this.inFootnoteDef = false;
-    this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
+    this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null; this.indentCodeInBlockquote = false;
   }
 
   // Pops back to the nearest ancestor that can directly hold new block-level
