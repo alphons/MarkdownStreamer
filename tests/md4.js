@@ -986,6 +986,7 @@ class MarkdownStreamer {
         if (p.split('').every(c => c === fc)) return;
         const fenceCount = p.length - 1;
         if (fenceCount >= 3) {
+          this._preserveListNestingIfIndented();
           this.closeBlock(); this.inCodeFence = true; this.fenceChar = fc;
           this.fenceCount = fenceCount; this.fencePrefix = ch; this.closingFenceBuf = null;
           this.fenceOpenIndent = this.lineIndent;
