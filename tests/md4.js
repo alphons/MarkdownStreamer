@@ -540,7 +540,7 @@ class MarkdownStreamer {
       // of these block constructs while a paragraph/list-item/definition is
       // already open — it's just lazy-continuation text (matches the same
       // rule already applied to setext underlines).
-      if ((contTag === 'P' || contTag === 'LI' || contTag === 'DD') && this.lineIndent >= 4) {
+      if ((contTag === 'P' || contTag === 'LI' || contTag === 'DD') && this.lineIndent >= 4 && !this._inListContinuation) {
         this._continueOrFallback();
       } else if (p[0] === '>') {
         const { level } = this._bqLevel(p);
