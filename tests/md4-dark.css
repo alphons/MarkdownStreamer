@@ -1,0 +1,9 @@
+/* ── MD4 dark theme (default) ──
+   Defines the custom properties that md4.css's markdown rules render with.
+   Load together with md4.css. */
+
+.pane-output {
+  --bg:#0e0e10; --border:#2a2a30;
+  --accent:#00e5a0; --text:#d4d4d8; --text-dim:#71717a; --code-bg:#1e1e24;
+  --mono:'JetBrains Mono',monospace; --serif:'Newsreader',Georgia,serif;
+}
