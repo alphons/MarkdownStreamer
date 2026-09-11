@@ -480,7 +480,15 @@ class MarkdownStreamer {
       // meantime (the actual bug this guard exists to prevent).
       if (d.failed) { this.flushDefPending(); this.resetLine(); return; }
       if (d.phase === 'dest' && !d.angle && d.dest !== '') { d.phase = 'gap'; d.gapSawSpace = true; } // bare dest ends at whitespace, incl. a line ending
-      if (d.phase === 'title') { d.title += '\n'; this.resetLine(); return; }
+      if (d.phase === 'title') {
+        // A title MAY span a line ending (CommonMark 4.7), but not a truly
+        // BLANK one — a blank line always ends the reference definition
+        // attempt outright, invalidating it (the title's closing quote
+        // never arrived), same as it does for the destination/gap phases
+        // just below.
+        if (this.linePos === 0) { d.failed = true; this.flushDefPending(); this.resetLine(); return; }
+        d.title += '\n'; this.resetLine(); return;
+      }
       // NOT this.pending — that's already been cleared (by _bd(), when the
       // definition itself first started) and stays empty the whole time
       // regardless of how many characters _feedDefChar() has consumed.
