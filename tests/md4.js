@@ -809,6 +809,13 @@ class MarkdownStreamer {
       this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false; this.linkState = null;
       this._resetUrlParse();
     } else if (this.linkState !== null) {
+      // Most commonly 'label_open' reaching end-of-input/line with no
+      // closing "]" ever found — the "[" that opened it was never
+      // written as a literal character (it commits straight to a real
+      // <a> for the live-streaming case), so it must be restored before
+      // unwrapping, same as every other link-abort path already does.
+      const a = this.dom.find('A');
+      if (a) a.insertBefore(document.createTextNode('['), a.firstChild);
       this.abortLinkElement(null);
     }
 
