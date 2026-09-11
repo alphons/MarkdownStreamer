@@ -702,7 +702,7 @@ class MarkdownStreamer {
     }
 
     if (this.atxLevel && this.textNode)
-      this.textNode.data = this.textNode.data.replace(/^#+\s*$/, '').replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '').replace(/ +$/, '');
+      this.textNode.data = this.textNode.data.replace(/^#+\s*$/, '').replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '').replace(/ +$/, '').replace(/\x00/g, '#');
     this.atxLevel = 0;
     this.textNode = null;
 
@@ -1284,7 +1284,17 @@ class MarkdownStreamer {
     // itself literal, per CommonMark.
     if (this.escapeNext) {
       this.escapeNext = false;
-      this.appendToTextNode(this._isPunct(ch) ? ch : '\\' + ch);
+      // Inside an ATX heading, an escaped "\#" must survive as a literal
+      // "#" even at the end of the line — but the ATX closing-sequence
+      // stripper below (see the atxLevel cleanup near onInlineChar's
+      // "]" handling) can no longer tell an escaped "#" apart from a
+      // real (unescaped) closing "###" once it's just flattened into
+      // the text node as a plain character. Marking it with a sentinel
+      // here (swapped back to a literal "#" after that stripping has
+      // already run and skipped over it) keeps "\###" from being
+      // misread as an optional closing sequence and trimmed away.
+      const lit = this._isPunct(ch) ? ch : '\\' + ch;
+      this.appendToTextNode(this.atxLevel && ch === '#' ? '\x00' : lit);
       this.prevCharWs = false; return;
     }
     if (ch === '\\') { this.escapeNext = true; return; }
@@ -1850,18 +1860,19 @@ class MarkdownStreamer {
 
   // A failed link/image destination attempt falls back to literal text
   // reconstructed from urlRawBuf, which holds every character exactly as
-  // typed (backslashes included, unresolved) — CommonMark still applies
-  // ordinary backslash-escape processing to that literal text (the escape
-  // itself isn't specific to link syntax), so e.g. "[link](<foo\>)" must
-  // fall back to the literal text "[link](<foo>)", not "...(<foo\>)"
-  // with the backslash kept.
+  // typed (backslashes and "&...;" entities included, unresolved) —
+  // CommonMark still applies ordinary backslash-escape and entity-
+  // reference processing to that literal text (neither is specific to
+  // link syntax): "[link](<foo\>)" falls back to "[link](<foo>)", not
+  // "...(<foo\>)" with the backslash kept, and "[a](url &quot;tit&quot;)"
+  // falls back with real `"` characters, not literal "&quot;" text.
   _unescapeRaw(str) {
     let out = '';
     for (let i = 0; i < str.length; i++) {
       if (str[i] === '\\' && i + 1 < str.length && this._isPunct(str[i + 1])) { out += str[i + 1]; i++; }
       else out += str[i];
     }
-    return out;
+    return this._decodeEntities(out);
   }
   _isWsBoundary(ch) { return ch === undefined || ch === null || /\s/.test(ch); }
 
@@ -2778,7 +2789,20 @@ class MarkdownStreamer {
     }
     this.closeBlock(); this.openParagraph(); this.writeText(text);
   }
-  flushSetextAsFallback() { this._appendOrNewParagraph(this.setextBuf); }
+  flushSetextAsFallback() {
+    // A failed setext underline (interior spaces broke it, e.g. "--- -")
+    // can still independently qualify as a thematic break — dashes and
+    // spaces only, 3+ dashes total — which CommonMark gives priority
+    // over lazy paragraph-continuation text: it ends the paragraph with
+    // an <hr>, rather than the underline just becoming more paragraph
+    // text. ("=" never forms a thematic break, only "-"/"*"/"_" do, and
+    // setext underlines are only ever '-' or '='.)
+    if (this.setextChar === '-' && /^-( *-)* *$/.test(this.setextBuf) && (this.setextBuf.match(/-/g)||[]).length >= 3) {
+      this.makeHr();
+      return;
+    }
+    this._appendOrNewParagraph(this.setextBuf);
+  }
   flushHrAsFallback()     { this._appendOrNewParagraph(this.hrChar.repeat(this.hrCount)); }
 
   // ── Table ──────────────────────────────────────────────────────────────────
