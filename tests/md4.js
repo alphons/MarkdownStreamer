@@ -1746,7 +1746,11 @@ class MarkdownStreamer {
     const openMatch = buf.match(/^([a-zA-Z][a-zA-Z0-9-]*)(\s[\s\S]*)?\/?$/);
     if (openMatch && this._isValidOpenTagBody(buf)) {
       const tagName = openMatch[1];
-      const selfClosing = /\/\s*$/.test(buf) || VOID_TAGS.has(tagName.toLowerCase());
+      // A trailing "/" before ">" is only honored by a real HTML parser
+      // for void elements (and foreign SVG/MathML elements, which this
+      // parser doesn't create here) — on an ordinary element like <a/> it
+      // is simply ignored and the element stays open, exactly like <a>.
+      const selfClosing = VOID_TAGS.has(tagName.toLowerCase());
       const body = selfClosing ? buf.replace(/\/\s*$/, '') : buf;
       try {
         const doc = new DOMParser().parseFromString('<' + body + '></' + tagName + '>', 'text/html');

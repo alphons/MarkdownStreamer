@@ -63,6 +63,15 @@ function normalize(html) {
     html
       .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
       .replace(/ class="blk"/g, '')
+      // A trailing text node (often just the source's own trailing "\n")
+      // sitting after a </p> that auto-closed while an unclosed <a> (or
+      // other formatting element) was still open triggers the HTML5
+      // parser's "reconstruct active formatting elements" step, spuriously
+      // reopening an empty <a></a> after the paragraph. That's a real
+      // parser quirk, but one purely of *this* trailing whitespace, not of
+      // any actual content difference — trim it before parsing so it can't
+      // spuriously distinguish two sides that render identically otherwise.
+      .trim()
   )
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')

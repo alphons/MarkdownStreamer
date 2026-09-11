@@ -20,6 +20,7 @@ function normalize(html) {
     html
       .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
       .replace(/ class="blk"/g, '')
+      .trim()
   )
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
