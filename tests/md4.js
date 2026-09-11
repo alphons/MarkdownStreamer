@@ -1234,6 +1234,21 @@ class MarkdownStreamer {
       return;
     }
 
+    // A still-pending marker (e.g. an unresolved backtick run buffered by
+    // isMarkerChar() below, waiting to see if it's followed by more of the
+    // same char) must be resolved before any of the checks below try to
+    // start a NEW special construct on the character right after it.
+    // Without this, e.g. "`<b>`" resolves the '<' as the start of a raw
+    // HTML/autolink tag instead of as the first literal character of the
+    // code span that's still pending — turning `<abbr title="...">` into
+    // a real <abbr> element instead of literal code text. Resolving here
+    // mirrors what the '=' (highlight) branch already does below.
+    if (this.inlinePending && (ch === '\\' || ch === '$' || ch === '&' || ch === '<' || (this.prevCharWs && ch === 'h'))) {
+      this.resolveInlinePending(ch);
+      this.prevCharWs = false;
+      return;
+    }
+
     // Backslash escape — only ASCII punctuation can be escaped; a backslash
     // before anything else (a letter, digit, tab, non-ASCII char, ...) is
     // itself literal, per CommonMark.
