@@ -1510,7 +1510,12 @@ class MarkdownStreamer {
       }
       return;
     }
-    if (this.prevCharWs && ch === 'h') { this.bareUrlBuf = 'h'; this.prevCharWs = false; return; }
+    // Bare (auto-linked, non-angle-bracketed) URL detection is a common
+    // GFM/AI-output extension, not part of core CommonMark (6.9's autolinks
+    // require the enclosing "<...>") — skipped entirely in strict mode so
+    // e.g. a plain "https://example.com" stays literal text, matching the
+    // spec's own conformance suite (example #611).
+    if (!this.commonMarkStrict && this.prevCharWs && ch === 'h') { this.bareUrlBuf = 'h'; this.prevCharWs = false; return; }
 
     // ==highlight==
     if (ch === '=') {
