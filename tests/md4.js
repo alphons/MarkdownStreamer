@@ -144,6 +144,19 @@ class MarkdownStreamer {
 
   // ── Public processChar ─────────────────────────────────────────────────────
   processChar(ch) {
+    // An in-progress "<...>" raw-HTML/autolink scan survives a line ending
+    // — CommonMark 6.9 lets a comment, processing instruction,
+    // declaration, CDATA section, or an ordinary tag's own attributes
+    // span multiple lines (examples #615, #616, #625) — so every
+    // character of a later line, including its own "\n", is still fully
+    // literal content of the SAME scan, not something to run back through
+    // ordinary per-line block-transition logic (onNewline()'s general
+    // end-of-line cleanup assumes a normal line boundary: it closes
+    // blank-line-ended blocks, resets blockDecided so the NEXT line gets
+    // its own fresh block decision, etc. — none of which applies here,
+    // matching the identical early bypass already used for an open code
+    // span or an in-progress raw-HTML BLOCK, just below).
+    if (this.autolinkBuf !== null) { this._feedAutolinkChar(ch); return; }
     if (ch === '\n') { this.onNewline(); return; }
     // A fence opened while replaying a blockquote's content can only
     // ever be continued by a line that itself starts with ">" — see
@@ -897,10 +910,13 @@ class MarkdownStreamer {
     // An unresolved "<...tag attempt" left open at end-of-line (e.g. an
     // unmatched quote inside it) would otherwise be silently discarded by
     // resetLine() below — fall back to literal text instead of losing it.
-    if (this.autolinkBuf !== null) {
-      this.appendToTextNode('<' + this.autolinkBuf);
-      this.autolinkBuf = null; this.autolinkQuote = null;
-    }
+    // (A span that's meant to survive the line ending instead — CommonMark
+    // 6.9 lets a comment/PI/declaration/CDATA/tag's attributes span
+    // multiple lines — never reaches here at all: processChar()'s own
+    // early bypass, mirroring the one for an open code span, intercepts
+    // every character of a later line, including its "\n", before this
+    // whole function's ordinary per-line machinery even runs.)
+    if (this.autolinkBuf !== null) this._flushAutolinkAsLiteral();
 
     // Same for inline math: it doesn't span a line ending, so an
     // unresolved "$..." at end-of-line was never valid math after all.
@@ -1901,9 +1917,44 @@ class MarkdownStreamer {
     }
     if (ch === '"' || ch === "'") { this.autolinkQuote = ch; this.autolinkBuf += ch; return; }
     if (ch === '>') { this._resolveAutolinkBuf(); return; }
-    if (ch === '<') { this.appendToTextNode('<' + this.autolinkBuf); this.autolinkBuf = ''; return; }
+    if (ch === '<') { this._flushAutolinkAsLiteral(); this.autolinkBuf = ''; this.autolinkQuote = null; return; }
     this.autolinkBuf += ch;
-    if (this.autolinkBuf.length > 2000) { this.appendToTextNode('<' + this.autolinkBuf); this.autolinkBuf = null; }
+    if (this.autolinkBuf.length > 2000) this._flushAutolinkAsLiteral();
+  }
+
+  // A "<...>" span that never resolved into anything valid (no matching
+  // "]]>"/"?>"/"-->"/">" arrived, or a length safety cutoff was hit) falls
+  // back to ordinary text — but CommonMark still applies ALL its normal
+  // rules to that text (most notably backslash escapes: "<a href=\"\\\"\">"
+  // isn't valid HTML, so its own "\\\"" is a plain escaped quote, the
+  // backslash itself never surviving into the output — example #632), so
+  // replaying the raw source through onInlineChar() one character at a
+  // time (same pattern used by this codebase's other literal-text
+  // fallbacks, e.g. flushDefPending()) is correct here, not a plain
+  // literal append of the untouched source text.
+  _flushAutolinkAsLiteral() {
+    const buf = this.autolinkBuf;
+    this.autolinkBuf = null; this.autolinkQuote = null;
+    // The opening "<" itself is written directly as literal text, NOT
+    // replayed through onInlineChar() — replaying it would immediately
+    // re-trigger the exact same "does this open a tag/autolink?" check
+    // that got us here in the first place, re-entering an equally
+    // unresolved autolinkBuf scan instead of ever actually falling back
+    // to text (silently producing nothing at all, since a still-open scan
+    // writes no output of its own). Only the content AFTER it is replayed,
+    // since it may itself contain real markdown that was wrongly
+    // suppressed while mistaken for tag content (backslash escapes,
+    // emphasis, entities, or even a genuinely different nested "<...>").
+    this.appendToTextNode('<');
+    for (const c of buf) { this.onInlineChar(c); this.lastChar = c; }
+    // The replay just above can itself open a brand new (and, if we've
+    // reached end of input with nothing left to feed it, equally
+    // unresolved) autolinkBuf scan — most commonly a SECOND stray "<...>"
+    // elsewhere in this same literal text (example #620's two separate
+    // unmatched tags on one line). Resolve that one too, the same way,
+    // rather than leaving it open and silently dropping everything from
+    // there on (this function's caller only ever checks once).
+    if (this.autolinkBuf !== null) this._flushAutolinkAsLiteral();
   }
 
   // Inserts a complete, self-contained literal raw-HTML construct (a
@@ -3881,10 +3932,7 @@ class MarkdownStreamer {
       const t = this.dom.current.firstChild;
       if (t && t.nodeType === 3 && t.data.endsWith(' ')) t.data = t.data.slice(0, -1);
     }
-    if (this.autolinkBuf !== null) {
-      this.appendToTextNode('<' + this.autolinkBuf);
-      this.autolinkBuf = null; this.autolinkQuote = null;
-    }
+    if (this.autolinkBuf !== null) this._flushAutolinkAsLiteral();
     if (this.mathInlineBuf !== null) {
       this.appendToTextNode('$' + this.mathInlineBuf);
       this.mathInlineBuf = null;
