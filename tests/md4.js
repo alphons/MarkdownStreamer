@@ -3110,6 +3110,29 @@ class MarkdownStreamer {
     }
     if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
     this.lastBlockEl = null;
+    // This line's indentation fell short of the item's own content
+    // column, so the list genuinely ends here — but it may still be
+    // enough for the ORDINARY top-level indented-code rule (4 spaces
+    // from column 0, unrelated to the list at all). decideBlock(ch)
+    // below only ever sees `ch` itself, not this.lineIndent (that
+    // belongs to processChar()'s own leading-whitespace prologue, which
+    // already ran and skipped opening code here because dom.currentTag()
+    // was still 'LI' at the time — this is the first point after popping
+    // out of it where that's no longer true), so a case like
+    // " -    one\n\n     two\n" needs it checked explicitly here instead.
+    if (this.lineIndent >= 4 && !/^ *$/.test(this.pending + ch)) {
+      this.closeBlock();
+      const pre = this.dom.push('pre');
+      const code = document.createElement('code');
+      pre.appendChild(code);
+      this.textNode = document.createTextNode(' '.repeat(this.lineIndent - 4));
+      code.appendChild(this.textNode);
+      this.inIndentCode = true; this.lastBlockEl = pre;
+      this.lineIndent = 0;
+      this._bd();
+      this.onContentChar(ch);
+      return;
+    }
     // Not (yet) known whether this dedents fully out of the list or is a new
     // sibling item — openListItem() marks looseness itself if it turns out
     // to be the latter, reusing the same list. Only a genuine blank line
