@@ -1117,6 +1117,7 @@ class MarkdownStreamer {
             type: 'ref', key: p.slice(1, ci).toLowerCase(),
             phase: 'dest', dest: '', title: null, titleQuote: null,
             angle: undefined, parenDepth: 0, escapeNext: false, failed: false,
+            raw: p, // exact original "[label]:" text, for a literal-text fallback if this never gets a destination (see flushDefPending())
           };
           this._bd(); return;
         }
@@ -2331,7 +2332,35 @@ class MarkdownStreamer {
   flushDefPending() {
     if (!this.defPending) return;
     const d = this.defPending;
-    if (d.type === 'ref' && !d.failed && !(d.key in this.refDefs)) {
+    if (d.type === 'ref' && (d.failed || d.dest === '')) {
+      // Never became valid — CommonMark requires an actual destination
+      // (5.7), so "[foo]:" with nothing (or invalid syntax) after it is
+      // NOT a reference definition at all, just an ordinary paragraph
+      // line, and must not be silently dropped (the exact bug the
+      // d.failed early-finalize check elsewhere already guards against
+      // for other grammar violations). Deliberately NOT a full replay
+      // through the normal per-character pipeline here (unlike other
+      // literal-text fallbacks this session) — that risks this same
+      // literal text containing its OWN "[label]:"-shaped prefix and
+      // recursively re-entering this exact function; appendOrNewParagraph()
+      // with the raw text is simpler and can't recurse, at the cost of
+      // not re-splitting multi-line raw text into separate paragraphs
+      // the way a real per-character replay would (rare in practice).
+      this.defPending = null;
+      this._appendOrNewParagraph(d.raw);
+      // This call is always reached from a blank-line trigger (the
+      // ONLY case that ever finalizes a still-open ref attempt as
+      // invalid — see the d.failed early-finalize check and the
+      // dest==='' blank-line check, both in onNewline()) — so the
+      // paragraph line just written is already complete and must be
+      // closed right away, or the blank line that triggered this would
+      // otherwise get silently swallowed and the NEXT line wrongly
+      // joins this same paragraph as a soft-break continuation instead
+      // of starting its own.
+      if (this.dom.currentTag() === 'P') { this._flushEmphasis(this.dom.current); this.dom.pop(); this.textNode = null; this.lastBlockEl = null; }
+      return;
+    }
+    if (d.type === 'ref' && !(d.key in this.refDefs)) {
       this.refDefs[d.key] = {
         url: this._encodeUrl(this._decodeEntities(d.dest)),
         title: d.title !== null ? this._decodeEntities(d.title) : null,
@@ -2364,6 +2393,7 @@ class MarkdownStreamer {
 
   _feedDefChar(ch) {
     const d = this.defPending;
+    d.raw += ch; // exact original text, for the literal-text fallback if this never becomes valid (see flushDefPending())
     if (d.escapeNext) {
       d.escapeNext = false;
       const lit = this._isAsciiPunct(ch) ? ch : '\\' + ch;
