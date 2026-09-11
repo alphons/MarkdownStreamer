@@ -2550,7 +2550,25 @@ class MarkdownStreamer {
       // not re-splitting multi-line raw text into separate paragraphs
       // the way a real per-character replay would (rare in practice).
       this.defPending = null;
-      this._appendOrNewParagraph(d.raw);
+      // Replayed through the INLINE-only pipeline (onInlineChar) instead of
+      // _appendOrNewParagraph's plain literal-text write, so e.g. a literal
+      // "<bar>" fallback still parses as real (inert) inline HTML the way a
+      // browser's DOM actually would (CommonMark example #201) — safe from
+      // the recursion a full processChar()/decideBlock() replay would risk
+      // (this same text containing its OWN "[label]:"-shaped prefix) since
+      // onInlineChar never touches this.defPending or block decisions at
+      // all. A raw newline becomes an ordinary soft-break space rather than
+      // re-split into its own paragraph (a rare, accepted deviation for
+      // this already-invalid-syntax fallback).
+      {
+        const tag = this.dom.currentTag();
+        if (!(tag === 'P' || tag === 'LI' || tag === 'DD')) { this.closeBlock(); this.openParagraph(); }
+        else if (this.hadJoinSpace) { this.hadJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
+        for (const c of d.raw) {
+          if (c === '\n') { this.appendToTextNode(' '); this.lastChar = ' '; }
+          else { this.onInlineChar(c); this.lastChar = c; }
+        }
+      }
       // This call is always reached from a blank-line trigger (the
       // ONLY case that ever finalizes a still-open ref attempt as
       // invalid — see the d.failed early-finalize check and the
