@@ -2332,7 +2332,7 @@ class MarkdownStreamer {
   flushDefPending() {
     if (!this.defPending) return;
     const d = this.defPending;
-    if (d.type === 'ref' && (d.failed || d.dest === '')) {
+    if (d.type === 'ref' && (d.failed || (d.dest === '' && !d.angle))) {
       // Never became valid — CommonMark requires an actual destination
       // (5.7), so "[foo]:" with nothing (or invalid syntax) after it is
       // NOT a reference definition at all, just an ordinary paragraph
