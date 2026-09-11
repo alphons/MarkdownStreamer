@@ -3070,7 +3070,21 @@ class MarkdownStreamer {
   // (e.g. "-\n" — the pendingEmptyItem path) — that item stays tight, and
   // this is simply its (first and only) content, not a second block.
   _resolveListBlankContinuation(ch, fromBlank) {
-    const top = this.listStack[this.listStack.length - 1];
+    let top = this.listStack[this.listStack.length - 1];
+    // This line's indent may fall short of the INNERMOST list's own
+    // content column while still qualifying for an OUTER one — e.g.
+    // "* foo\n  * bar\n\n  baz\n": "baz" doesn't belong to "bar"'s
+    // (nested) item, but is still a second block of "foo"'s (outer)
+    // one. Pop fully out of each level that doesn't qualify (its <li>,
+    // and the <ul>/<ol> it was the last child of) before checking the
+    // next one out, same as decideBlock()'s own multi-level dedent
+    // logic for a genuinely new sibling marker.
+    while (top && this.lineIndent < top.contentCol && this.listStack.length > 1) {
+      if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
+      if (['UL', 'OL'].includes(this.dom.currentTag())) this.dom.pop();
+      this.listStack.pop();
+      top = this.listStack[this.listStack.length - 1];
+    }
     if (top && this.lineIndent >= top.contentCol) {
       this.lineIndent = 0; this.leadingWsChars = 0;
       if (fromBlank) {
