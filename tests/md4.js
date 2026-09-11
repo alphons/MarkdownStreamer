@@ -1083,7 +1083,20 @@ class MarkdownStreamer {
         // a paragraph at all (handled by onNewline's undecided-line
         // fallback once blockDecided never became true for this line).
         if (/^ *$/.test(p.slice(i))) return;
-        this.ensureBlockquote(level);
+        // Lazy continuation (CommonMark 5.1): fewer ">" markers than the
+        // depth currently open still belongs to the SAME still-open
+        // paragraph, as long as one is actually open right now — the
+        // missing markers are implied, not a signal to shallow the
+        // blockquote nesting down to match. Leave dom.current (and the
+        // blockquote depth) alone entirely in that case, same as an
+        // ordinary lazy-continuation line with NO ">" at all (which never
+        // reaches this case in the first place, p[0] not being ">") —
+        // _blockDefault()'s own tag==='P' branch, reached via the replay
+        // just below, keeps it open exactly the same way.
+        let curDepth = 0, _e = this.dom.current;
+        while (_e) { if (_e.tagName === 'BLOCKQUOTE') curDepth++; if (_e === this.dom.bottomStack) break; _e = _e.parentNode; }
+        const lazy = level < curDepth && this.dom.currentTag() === 'P';
+        if (!lazy) this.ensureBlockquote(level);
         this.pending = ''; this.blockDecided = false;
         this._inBlockquoteContent = true;
         const rest = p.slice(i);
@@ -3443,6 +3456,30 @@ class MarkdownStreamer {
   }
 
   openListItem(type, indent, marker, startNum, contentCol) {
+    // A list item can never be LAZILY continued into an enclosing
+    // blockquote (CommonMark 5.1: laziness only ever applies to plain
+    // paragraph continuation text, never to a fresh block-starting
+    // marker like this one). If the line providing this marker has no
+    // ">" of its own, yet the list currently on top of listStack is
+    // itself nested INSIDE a blockquote an earlier line left open, that
+    // blockquote — and the list tracked inside it — is over: the same
+    // "close it, don't lazily continue" call closeBlock() already makes
+    // for every OTHER new block-starter, just applied here too (this
+    // path reaches the listStack machinery directly, bypassing
+    // closeBlock() and its blockquote check entirely otherwise).
+    // Deliberately keyed off the LIST's own element, not just whether
+    // dom.current currently has some blockquote ancestor — the opposite
+    // nesting (a blockquote sitting inside one of THIS list's own items,
+    // e.g. "* a\n  > b\n") must NOT trigger this: that blockquote is the
+    // list's content, not the other way around, and a later sibling
+    // marker at the list's own level still belongs to the same list.
+    if (this.listStack.length > 0 && !this._inBlockquoteContent) {
+      const top = this.listStack[this.listStack.length - 1];
+      if (top.el && top.el.closest && top.el.closest('blockquote')) {
+        this.closeBlock();
+        this.listStack = [];
+      }
+    }
     this._popMarkers();
     this.textNode = null;
     if (this.listStack.length === 0) {
