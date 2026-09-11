@@ -136,6 +136,16 @@ class MarkdownStreamer {
   // ── Public processChar ─────────────────────────────────────────────────────
   processChar(ch) {
     if (ch === '\n') { this.onNewline(); return; }
+    // A fence opened while replaying a blockquote's content can only
+    // ever be continued by a line that itself starts with ">" — see
+    // the matching flag set where the fence opens (case '`'/'~':).
+    // Checked before the unconditional inCodeFence swallow just below,
+    // which would otherwise happily feed ANY line into it regardless.
+    if (this.inCodeFence && this.fenceInBlockquote && this.linePos === 0 && ch !== '>') {
+      this.inCodeFence = false; this.fencePrefix = ''; this.closingFenceBuf = null;
+      this.fenceInBlockquote = false;
+      this.closeBlock();
+    }
     if (this.inCodeFence) {
       if (this.fencePrefix === null) { this.feedCodeFenceLine(ch); return; }
       this.fencePrefix += ch; return;
@@ -572,6 +582,7 @@ class MarkdownStreamer {
         this.closeBlock(); this.inCodeFence = true; this.fenceChar = p[0];
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
         this.fenceOpenIndent = this.lineIndent;
+        this.fenceInBlockquote = this._inBlockquoteContent;
         this.onCodeFenceNewline();
       } else if (p[0] === '*' && /^\*([ \t]*\*)*[ \t]*$/.test(p) && (p.match(/\*/g)||[]).length >= 3) {
         this.makeHr();
@@ -977,6 +988,16 @@ class MarkdownStreamer {
           this.closeBlock(); this.inCodeFence = true; this.fenceChar = fc;
           this.fenceCount = fenceCount; this.fencePrefix = ch; this.closingFenceBuf = null;
           this.fenceOpenIndent = this.lineIndent;
+          // A fence opened while replaying a blockquote's content (case
+          // '>':) — same as the analogous indentCodeInBlockquote flag,
+          // this can only ever be CONTINUED by a later line that itself
+          // starts with ">" (a fenced code block gets no lazy
+          // continuation at all, and a blockquote never survives a
+          // line lacking its own ">" prefix either way); checked at the
+          // top of processChar(), which otherwise unconditionally feeds
+          // ANY line's content into an open fence regardless of
+          // whether this one ever continues the quote it opened in.
+          this.fenceInBlockquote = this._inBlockquoteContent;
           this._bd(); return;
         }
         this._blockDefault(ch); return;
