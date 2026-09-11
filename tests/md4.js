@@ -2641,7 +2641,23 @@ class MarkdownStreamer {
             // would otherwise separate "*foo*" from a directly-
             // following element once more content is appended here.
             el.appendChild(document.createTextNode('\n'));
+          } else if (/\s$/.test(raw)) {
+            // Explicitly closed within its own text after all (e.g.
+            // "<div>...</div>" all as one blank-line-terminated block) —
+            // stays fully closed, but the SAME trailing-separator gap
+            // still applies if something follows with no blank line
+            // in between; append into `parent` instead of into the
+            // (now complete) element itself.
+            parent.appendChild(document.createTextNode('\n'));
           }
+        } else if (insertedNodes.length > 0 && /\s$/.test(raw)) {
+          // A block that ends mid-line, at its own terminator, rather
+          // than at a blank line (a comment/PI/CDATA reaching "-->" etc,
+          // or a type-1 tag reaching its matching closing tag) — e.g.
+          // "<!-- foo -->*bar*\n*baz*\n": whatever follows (same line or
+          // the next, with no blank line required first) needs this
+          // same separating gap preserved, same reasoning as above.
+          parent.appendChild(document.createTextNode('\n'));
         }
       }
     } catch(e) { this.writeText(raw); if (this.textNode) insertedNodes.push(this.textNode); }

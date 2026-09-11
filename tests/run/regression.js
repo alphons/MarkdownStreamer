@@ -144,7 +144,7 @@ test('"===" after a blank line stays as plain text (no prior paragraph to conver
 // ── Raw HTML block passthrough ─────────────────────────────────────────────
 test('a raw <div> block passes through unescaped', () => {
   const html = render('<div>hello</div>\n');
-  assert.strictEqual(html, '<div>hello</div>');
+  assert.strictEqual(html, '<div>hello</div>\n');
 });
 
 test('a raw <p align="..."> block passes through unescaped, not as literal text', () => {
@@ -539,7 +539,7 @@ test('a standalone HTML comment is not silently dropped', () => {
   // Regression: resolved (via _bd()) without ever writing anything, since
   // "the comment closes on the same line" wasn't routed through the actual
   // raw-HTML flush path at all.
-  assert.strictEqual(render('<!-- comment -->\n'), '<!-- comment -->');
+  assert.strictEqual(render('<!-- comment -->\n'), '<!-- comment -->\n');
 });
 
 test('a type-6 HTML block (e.g. <div>) ends at the next blank line, not a matching close tag', () => {
@@ -802,7 +802,7 @@ test('a "[" while already inside an open link label never creates an invalid nes
 // ── HTML block type 7 (CommonMark 4.6) ──────────────────────────────────────
 test('a complete tag alone on its line, with a name not in the type-6 list, is an HTML block', () => {
   const html = render('<a href="foo">\n*bar*\n</a>\n');
-  assert.strictEqual(html, '<a href="foo">\n*bar*\n</a>');
+  assert.strictEqual(html, '<a href="foo">\n*bar*\n</a>\n');
 });
 
 test('type 7 cannot interrupt an already-open paragraph', () => {
@@ -1058,7 +1058,7 @@ test('a fence as a list marker\'s own first content (same line) stays nested ins
 
 test('listStack is trimmed when a block (HTML comment) closes outside the tracked list, so a later unrelated list starts fresh instead of attaching to the stale one', () => {
   const html = render('- foo\n- bar\n\n<!-- -->\n\n- baz\n- bim\n');
-  assert.strictEqual(html, '<ul><li>foo</li><li>bar</li></ul><!-- --><ul><li>baz</li><li>bim</li></ul>');
+  assert.strictEqual(html, '<ul><li>foo</li><li>bar</li></ul><!-- -->\n<ul><li>baz</li><li>bim</li></ul>');
 });
 
 test('a tight item nesting a sub-list directly under its own text keeps the source newline as a literal trailing text node', () => {
