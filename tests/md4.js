@@ -1188,6 +1188,13 @@ class MarkdownStreamer {
           if (cannotInterrupt) { this._blockDefault(ch); return; }
         }
         const ci = p.indexOf(']:');
+        // A reference label may not contain an unescaped "[" or "]"
+        // (CommonMark 6.1's link-label grammar) — "[ref[bar]]: /uri" and
+        // "[[[foo]]]: /url" are NOT valid definitions at all (examples
+        // #547, #548), just ordinary paragraph text, even though the
+        // FIRST "]:" substring scan above still finds a plausible-looking
+        // split point.
+        if (ci > 1 && this._hasUnescapedBracket(p.slice(1, ci))) { this._blockDefault(ch); return; }
         if (ci > 1) {
           // A definition produces no visible content of its own — if it's
           // starting inside a still-empty <p> (see the childNodes check
@@ -2256,6 +2263,18 @@ class MarkdownStreamer {
   // example: "\φ" and "\«" stay literal backslash-then-character, since φ
   // and « aren't ASCII, even though « IS Unicode punctuation).
   _isAsciiPunct(ch) { return ch !== undefined && ch !== null && /[!-/:-@[-`{-~]/.test(ch); }
+
+  // CommonMark 6.1: a link label cannot contain an unescaped "[" or "]" —
+  // checked against the RAW (pre-unescape) label text, so e.g. "ref[bar]"
+  // is rejected but "ref\[bar\]" is not. Used both for a reference
+  // definition's own "[label]:" and for a reference lookup's key.
+  _hasUnescapedBracket(raw) {
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] === '\\') { i++; continue; }
+      if (raw[i] === '[' || raw[i] === ']') return true;
+    }
+    return false;
+  }
   // CommonMark 6.2 defines "punctuation" for emphasis flanking as any
   // Unicode P (punctuation) or S (symbol) character — not just ASCII
   // punctuation — so e.g. "£"/"€" (Unicode Sc, currency symbols) count
