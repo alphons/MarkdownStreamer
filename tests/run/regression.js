@@ -820,7 +820,7 @@ test('a lone type-6/7 open tag stays open across intervening markdown until its 
   // matching closing tag. A real browser given the FULL resulting string
   // in one parse nests it the same way (verified against jsdom).
   const html = render('<del>\n\n*foo*\n\n</del>\n');
-  assert.strictEqual(html, '<del><p><em>foo</em></p></del>');
+  assert.strictEqual(html, '<del>\n<p><em>foo</em></p></del>');
 });
 
 test('indented code following a blank line inside a list item is recognized (not just a plain paragraph)', () => {

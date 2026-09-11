@@ -2633,6 +2633,14 @@ class MarkdownStreamer {
           if (!explicitlyClosed) {
             this._openRawHtmlEls.add(el);
             this.dom.current = el;
+            // raw.trim() above dropped the trailing line ending that
+            // separated this block's last line from whatever comes
+            // next while it's kept open — without it, e.g. "<div>\n
+            // *foo*\n" (no blank line yet, so "*foo*" is still this
+            // SAME block's literal content) loses the only thing that
+            // would otherwise separate "*foo*" from a directly-
+            // following element once more content is appended here.
+            el.appendChild(document.createTextNode('\n'));
           }
         }
       }
