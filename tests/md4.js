@@ -2648,7 +2648,7 @@ class MarkdownStreamer {
     // itself may be indented up to 3 spaces (fenceLineIndent, tracked by
     // feedCodeFenceLine), independent of the opening fence's own indent.
     if (!this.fenceLineHasContent && this.closingFenceBuf.length >= (this.fenceCount || 3)
-        && (this.fenceLineIndent || 0) <= 3) {
+        && ((this.fenceLineIndent || 0) - (this.fenceOpenIndent || 0)) <= 3) {
       this.inCodeFence = false; this.closingFenceBuf = null; this.textNode = null;
       const pre = this.dom.find('PRE'); if (pre) this._pop(pre);
       this.lastBlockEl = null; this.resetLine(); return;
