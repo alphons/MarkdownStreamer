@@ -1283,11 +1283,24 @@ class MarkdownStreamer {
     // Without this, e.g. "`<b>`" resolves the '<' as the start of a raw
     // HTML/autolink tag instead of as the first literal character of the
     // code span that's still pending — turning `<abbr title="...">` into
-    // a real <abbr> element instead of literal code text. Resolving here
-    // mirrors what the '=' (highlight) branch already does below.
+    // a real <abbr> element instead of literal code text.
+    // `ch` itself is passed through as the flanking character (still
+    // needed for emphasis open/close rules — e.g. a backslash is
+    // punctuation for flanking purposes even though it goes on to make
+    // the character after IT literal) but NOT auto-appended: it's
+    // re-dispatched through onInlineChar instead of resolveInlinePending's
+    // usual raw literal-append, so escape/entity/autolink processing
+    // still applies normally to it. That only matters when the marker
+    // just resolved to something other than a code span — a code span
+    // still ends up making `ch` literal either way, via this same
+    // function's own code-content branch at the top once re-entered.
+    // (Without the re-dispatch, "foo *\**" resolved the "\" as a raw
+    // literal character instead of an escape, leaving the following "*"
+    // stranded outside the <em> as literal text instead of becoming its
+    // content.)
     if (this.inlinePending && (ch === '\\' || ch === '$' || ch === '&' || ch === '<' || (this.prevCharWs && ch === 'h'))) {
-      this.resolveInlinePending(ch);
-      this.prevCharWs = false;
+      this.resolveInlinePending(null, ch);
+      this.onInlineChar(ch);
       return;
     }
 
