@@ -506,7 +506,7 @@ class MarkdownStreamer {
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
         this.fenceOpenIndent = this.lineIndent;
         this.onCodeFenceNewline();
-      } else if (p[0] === '*' && /^\*( *\*)* *$/.test(p) && (p.match(/\*/g)||[]).length >= 3) {
+      } else if (p[0] === '*' && /^\*([ \t]*\*)*[ \t]*$/.test(p) && (p.match(/\*/g)||[]).length >= 3) {
         this.makeHr();
       } else if (p[0] === '*' && /^\* /.test(p)) {
         this.openUlDecided(p.slice(2), '*');
@@ -901,7 +901,7 @@ class MarkdownStreamer {
         // character immediately followed by a space — so it's plain
         // paragraph text, left for ordinary inline emphasis parsing.
         if (p.length === 1) return;
-        if (/^\*( *\*)* *$/.test(p)) return;
+        if (/^\*([ \t]*\*)*[ \t]*$/.test(p)) return;
         if (p[1] === ' ') return this.openUlDecided(p.slice(2), '*');
         this._blockDefault(ch); return;
       }
@@ -956,7 +956,7 @@ class MarkdownStreamer {
         // nested-list branch below prematurely, misreading e.g.
         // "- - - -    " (trailing 4 spaces) as 4 levels of empty nested
         // list items instead of the thematic break it actually is.
-        if (/^-( *-)* *$/.test(p)) return;
+        if (/^-([ 	]*-)*[ 	]*$/.test(p)) return;
         if (/^- /.test(p)) return this.openUlDecided(p.slice(2), '-');
         return this.startHrWatch('-', (p.match(/-/g)||[]).length, false);
 
@@ -2815,7 +2815,7 @@ class MarkdownStreamer {
     // an <hr>, rather than the underline just becoming more paragraph
     // text. ("=" never forms a thematic break, only "-"/"*"/"_" do, and
     // setext underlines are only ever '-' or '='.)
-    if (this.setextChar === '-' && /^-( *-)* *$/.test(this.setextBuf) && (this.setextBuf.match(/-/g)||[]).length >= 3) {
+    if (this.setextChar === '-' && /^-([ 	]*-)*[ 	]*$/.test(this.setextBuf) && (this.setextBuf.match(/-/g)||[]).length >= 3) {
       this.makeHr();
       return;
     }
