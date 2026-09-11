@@ -690,11 +690,11 @@ class MarkdownStreamer {
       // in-line failure (_feedUrlChar returning {failed:true}).
       const a = this.dom.find('A');
       if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
-      this.abortLinkElement('(' + this.urlRawBuf);
+      this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
     } else if (this.linkState === 'img_url') {
       this.appendToTextNode('![');
       for (const c of this.linkBuf) { this.onInlineChar(c); this.lastChar = c; }
-      this.appendToTextNode('](' + this.urlRawBuf);
+      this.appendToTextNode('](' + this._unescapeRaw(this.urlRawBuf));
       this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false; this.linkState = null;
       this._resetUrlParse();
     } else if (this.linkState !== null) {
@@ -1662,7 +1662,7 @@ class MarkdownStreamer {
             // attempt, exactly as typed.
             const a = this.dom.find('A');
             if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
-            this.abortLinkElement('(' + this.urlRawBuf);
+            this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
           }
           else {
             const a = this.dom.find('A');
@@ -1777,14 +1777,14 @@ class MarkdownStreamer {
         if (this.urlParenDepth > 0) { this.urlParenDepth--; this.urlDest += ch; return null; }
         return this._finishUrl();
       }
-      if (/\s/.test(ch)) { this.urlPhase = 'gap'; return null; }
+      if (this._isLinkWs(ch)) { this.urlPhase = 'gap'; return null; }
       this.urlDest += ch; return null;
     }
 
     if (this.urlPhase === 'gap') {
       // Whitespace between the destination and an optional title.
       if (ch === ')') return this._finishUrl();
-      if (/\s/.test(ch)) return null;
+      if (this._isLinkWs(ch)) return null;
       if (ch === '"' || ch === "'" || ch === '(') {
         this.urlPhase = 'title'; this.urlTitleQuote = ch; this.urlTitle = ''; return null;
       }
@@ -1800,9 +1800,18 @@ class MarkdownStreamer {
 
     // 'trail': only whitespace may follow the title before the closing ")".
     if (ch === ')') return this._finishUrl();
-    if (/\s/.test(ch)) return null;
+    if (this._isLinkWs(ch)) return null;
     this.urlFailed = true; return null;
   }
+
+  // CommonMark's "whitespace" for link-destination/title syntax is the
+  // ASCII space/tab/line-ending set (spec 2.1), NOT JS regex \s — which
+  // also matches U+00A0 (non-breaking space) and other Unicode space
+  // separators. A non-breaking space between a destination and a title
+  // must NOT be treated as a valid separator (it isn't "whitespace" per
+  // the spec), or e.g. "[link](/url "title")" wrongly parses as a
+  // real link instead of falling back to literal text.
+  _isLinkWs(ch) { return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f'; }
 
   _finishUrl() {
     if (this.urlFailed) return { failed: true };
@@ -1838,6 +1847,22 @@ class MarkdownStreamer {
 
   // ── Delimiter flanking (CommonMark 6.2) ────────────────────────────────────
   _isPunct(ch) { return ch !== undefined && ch !== null && /[!-/:-@[-`{-~]/.test(ch); }
+
+  // A failed link/image destination attempt falls back to literal text
+  // reconstructed from urlRawBuf, which holds every character exactly as
+  // typed (backslashes included, unresolved) — CommonMark still applies
+  // ordinary backslash-escape processing to that literal text (the escape
+  // itself isn't specific to link syntax), so e.g. "[link](<foo\>)" must
+  // fall back to the literal text "[link](<foo>)", not "...(<foo\>)"
+  // with the backslash kept.
+  _unescapeRaw(str) {
+    let out = '';
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === '\\' && i + 1 < str.length && this._isPunct(str[i + 1])) { out += str[i + 1]; i++; }
+      else out += str[i];
+    }
+    return out;
+  }
   _isWsBoundary(ch) { return ch === undefined || ch === null || /\s/.test(ch); }
 
   // Returns whether a delimiter run bounded by `before`/`after` can open
