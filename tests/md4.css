@@ -56,7 +56,9 @@
 .pane-output a { color:#60c8ff; text-decoration:underline; text-underline-offset:3px; text-decoration-color:rgba(96,200,255,.35); transition:color .15s,text-decoration-color .15s; }
 .pane-output a:hover { color:#a8daff; text-decoration-color:#a8daff; }
 .pane-output img { max-width:100%; vertical-align:middle; border-radius:4px; }
-.pane-output img.blk { display:block; margin:.5em 0; }
+/* Bare (non-linked) images stay inline, matching how GitHub and other markdown
+   renderers treat them, instead of the block layout the .blk class implies. */
+.pane-output img.blk { display:inline; margin:0; }
 .pane-output abbr { text-decoration:underline dotted; cursor:help; }
 .pane-output details { border:1px solid var(--border); border-radius:4px; padding:8px 16px; margin:.6em 0; }
 .pane-output summary { cursor:pointer; font-weight:600; color:var(--accent); }

@@ -1881,7 +1881,12 @@ class MarkdownStreamer {
         // as the generic catch-all below, instead of letting '!'/']'/'^'
         // hijack a character that actually belongs to that in-progress
         // buffer.
-        if (this.autolinkBuf !== null) {
+        // Same reasoning for an escaped character (this.escapeNext,
+        // set by the PREVIOUS "\\" going through the catch-all below)
+        // — "\]" inside a label is a literal "]" character, not the
+        // label's own closing bracket, and must not be intercepted
+        // here before the escape gets a chance to apply.
+        if (this.autolinkBuf !== null || this.escapeNext) {
           if (this.linkLabelRaw !== undefined) this.linkLabelRaw += ch;
           this.linkState = null; this.onInlineChar(ch); this.linkState = 'label_open';
           return;
