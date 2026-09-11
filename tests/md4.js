@@ -92,6 +92,7 @@ class MarkdownStreamer {
     this.defPending = null;
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
     this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+    this._rawHtmlChain = null;
     this.mathInlineBuf = null; // "$...$" — not CommonMark, a common AI-output extension
     this.inMathBlock = false; this.mathBlockLineBuf = ''; this.mathBlockTextNode = null;
 
@@ -2475,7 +2476,34 @@ class MarkdownStreamer {
   }
 
   flushRawHtml() {
-    const raw = this.rawHtmlBuf;
+    let raw = this.rawHtmlBuf;
+    const parent = this.dom.current;
+    // Adjacent raw-HTML blocks (e.g. "<table>\n\n<tr>\n\n<td>...", each
+    // line its own type-6 HTML block per CommonMark 4.6, ended by the
+    // blank line after it) are each parsed and inserted independently —
+    // but a real HTML parser given "<table>" ALONE, with no closing tag,
+    // auto-closes it right there (there's nothing else in that string to
+    // nest inside it); it can only come out nested if "<table>", "<tr>",
+    // "<td>...</td>" etc. are all parsed TOGETHER, as one combined
+    // string, same as CommonMark's own reference output achieves simply
+    // by concatenating each literal block's text with nothing else (no
+    // wrapping <p>, no re-validation) in between. So: if the immediately
+    // preceding sibling(s) in the DOM are exactly the nodes THIS method
+    // inserted for the previous raw-HTML block, with nothing else
+    // appended after them since (checked via nextSibling === null — a
+    // cheap, self-invalidating test that needs no separate bookkeeping
+    // elsewhere), merge this block's raw text onto that previous one and
+    // reparse the two together as a single combined chunk, rather than
+    // parsing this one alone against an already-closed previous result.
+    const chain = this._rawHtmlChain;
+    const chainable = chain && chain.parent === parent &&
+      chain.nodes.length > 0 && chain.nodes[chain.nodes.length - 1].parentNode === parent &&
+      chain.nodes[chain.nodes.length - 1].nextSibling === null;
+    if (chainable) {
+      for (const n of chain.nodes) parent.removeChild(n);
+      raw = chain.raw + '\n\n' + raw;
+    }
+    const insertedNodes = [];
     try {
       // A <template>'s content parses as a plain fragment, not a full
       // document — unlike DOMParser().parseFromString(), a standalone
@@ -2484,17 +2512,30 @@ class MarkdownStreamer {
       // a direct child, ready to move as-is.
       const template = document.createElement('template');
       template.innerHTML = raw.trim();
-      if (template.content.children.length === 0 && /^<\//.test(raw.trim())) {
-        // A block starting with a closing tag that has no matching open
-        // element anywhere is simply discarded by any real HTML parser
-        // (there's nothing to close) — CommonMark wants it passed through
-        // literally, which a DOM text node can only represent as escaped
-        // text, but that's still preferable to losing the content outright.
-        this.writeText(raw);
+      if (template.content.childNodes.length === 0) {
+        // Truly nothing survived parsing at all (not even a leftover text
+        // node) — e.g. raw was only a stray closing tag with nothing
+        // else on its line, which any real HTML parser just discards
+        // (there's nothing to close). A real browser given this exact
+        // markup drops it the same way (verified: div.innerHTML =
+        // "</div>\n*foo*\n" keeps the "\n*foo*\n" text but the "</div>"
+        // itself vanishes) — so dropping it here too, instead of the
+        // ESCAPED-text fallback this used to fall back to, is what a
+        // fair DOM-equivalence comparison actually calls for. Checking
+        // childNodes (not just .children, which only counts elements)
+        // matters: raw content that's a dropped tag PLUS surrounding
+        // text (like the "</div>\n*foo*\n" example) already left that
+        // text behind as a text-node child of the fragment, and takes
+        // the normal branch below instead of reaching this one at all.
       } else {
-        while (template.content.firstChild) this.dom.current.appendChild(template.content.firstChild);
+        while (template.content.firstChild) {
+          const n = template.content.firstChild;
+          parent.appendChild(n);
+          insertedNodes.push(n);
+        }
       }
-    } catch(e) { this.writeText(raw); }
+    } catch(e) { this.writeText(raw); if (this.textNode) insertedNodes.push(this.textNode); }
+    this._rawHtmlChain = { parent, nodes: insertedNodes, raw };
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
     this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
     this.resetLine();
