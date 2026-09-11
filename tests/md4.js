@@ -729,7 +729,12 @@ class MarkdownStreamer {
         else this.makeHr();
       } else if (/^[_ ]+$/.test(p) && (p.match(/_/g)||[]).length >= 3) {
         this.makeHr();
-      } else if (/^- (- ?)+$/.test(p.trimEnd()) && (p.match(/-/g)||[]).length >= 3) {
+      } else if (p[0] === '-' && /^-([ \t]*-)*[ \t]*$/.test(p) && (p.match(/-/g)||[]).length >= 3) {
+        // Any run of "-", each optionally followed by spaces/tabs (not
+        // just a single optional space per dash, which the older, narrower
+        // pattern this replaced required) — CommonMark's thematic-break
+        // rule allows an arbitrarily wide gap between markers, e.g.
+        // "-     -      -      -" (example #53).
         this.makeHr();
       } else if (p[0] === '-' && /^- /.test(p)) {
         this.openUlDecided(p.slice(2), '-');
@@ -792,6 +797,20 @@ class MarkdownStreamer {
         this._continueOrFallback();
       }
       this.pending = '';
+      // A marker opened just now, from WITHIN this same block (most
+      // commonly openUlDecided(), reached via one of the branches just
+      // above) can itself set this.liAbsorb (see openUlDecided()'s own
+      // isAllSpaces case) — but the EARLY liAbsorb check near the top of
+      // this function (the one that normally converts it to
+      // pendingEmptyItem, per CommonMark 5.2's "marker with only trailing
+      // whitespace" rule) already ran and found nothing, since the marker
+      // didn't exist yet at that point. Same conversion, done again here
+      // for whatever a call in THIS block may have only just set.
+      if (this.liAbsorb) {
+        this.liAbsorb.top.contentCol = this.liAbsorb.base;
+        this.liAbsorb = null;
+        this.pendingEmptyItem = true;
+      }
     }
 
     if (!this.blockDecided) {
@@ -1249,15 +1268,16 @@ class MarkdownStreamer {
           if (p === '- - ') return;
           if (p.startsWith('- -')) return this.startHrWatch('-', 2, false, p);
           // Only ONE dash seen so far, with a run of 2+ trailing spaces
-          // and no second dash yet (e.g. "-   "): unlike the 2+-dash case
-          // just above, this can't still become a multi-dash thematic
-          // break candidate ("- - -" needs the SECOND dash by column 3),
-          // but it's also not necessarily committing to real content —
-          // openUlDecided() below already handles an all-spaces `s` as an
-          // empty-item-so-far (see its isAllSpaces branch), so committing
-          // here immediately (matching the pre-existing length<4 cases)
-          // is correct and must NOT be deferred like the length>=5
-          // catch-all's genuinely-still-ambiguous check does.
+          // and no second dash yet (e.g. "-   "): could still become a
+          // multi-dash thematic break with a WIDER-than-one-space gap
+          // before that second dash (e.g. "-     -      -      -", the gap
+          // being any run of spaces/tabs per CommonMark, not just one) —
+          // keep deferring exactly like the length>=5 catch-all's own
+          // still-ambiguous check just below already does for this same
+          // pure-dashes-and-whitespace shape, rather than assuming a
+          // single-space gap was the only possibility and committing to a
+          // list item right away.
+          if (/^-[ \t]*$/.test(p)) return;
           return this.openUlDecided(p.slice(2), '-');
         }
         // Still nothing but "-" and spaces (in any amount, including a
