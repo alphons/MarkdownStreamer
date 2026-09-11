@@ -494,8 +494,10 @@ class MarkdownStreamer {
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
         this.fenceOpenIndent = this.lineIndent;
         this.onCodeFenceNewline();
-      } else if (p[0] === '*' && /^\*{3,}$/.test(p)) {
+      } else if (p[0] === '*' && /^\*( *\*)* *$/.test(p) && (p.match(/\*/g)||[]).length >= 3) {
         this.makeHr();
+      } else if (p[0] === '*' && /^\* /.test(p)) {
+        this.openUlDecided(p.slice(2), '*');
       } else if (p[0] === '-' && /^-{3,}$/.test(p)) {
         if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) this.resolveSetext('h2');
         else this.makeHr();
@@ -869,18 +871,26 @@ class MarkdownStreamer {
           if (p.length === bracketIdx + 1) return;
           this._blockDefault(ch); return;
         }
-        // Unordered list / thematic break
+        // Unordered list / thematic break. Kept deferred (buffered, no
+        // commitment yet) for as long as the line so far is nothing but
+        // "*" and spaces in any arrangement — "* * *", "**  * ** * **",
+        // "***", etc. can all still resolve into a thematic break right
+        // up to end of line (any amount of whitespace is allowed between
+        // and after the marker characters, not just a single space —
+        // committing early on a fixed short pattern misreads e.g.
+        // "* * *" as a list item "* *" instead of the <hr> it actually
+        // is). Once real content breaks that pattern: if what's been
+        // seen so far starts with "* " (a single star, then ONE space),
+        // that's an unambiguous list marker — commit to a (possibly
+        // nested, via openUlDecided()'s own recursive reprocessing of
+        // its content) list item. Otherwise (e.g. "**text", consecutive
+        // stars with no space before the real content) it can never be a
+        // list marker at all — a list marker needs exactly one marker
+        // character immediately followed by a space — so it's plain
+        // paragraph text, left for ordinary inline emphasis parsing.
         if (p.length === 1) return;
-        if (p.length === 2) {
-          if (p[1] === ' ') return this.openUlDecided('', '*');
-          if (p[1] !== '*') return this._blockDefault(ch);
-          return;
-        }
-        if (p.length === 3) { if (p === '***') return; this._blockDefault(ch); return; }
-        if (p.length === 4) {
-          if (p[3] === ' ' || p[3] === '*') return this.startHrWatch('*', p.split('*').length - 1, false);
-          this._blockDefault(ch); return;
-        }
+        if (/^\*( *\*)* *$/.test(p)) return;
+        if (p[1] === ' ') return this.openUlDecided(p.slice(2), '*');
         this._blockDefault(ch); return;
       }
 
@@ -912,9 +922,29 @@ class MarkdownStreamer {
         if (p.length === 4) {
           if (p === '- - ') return;
           if (p.startsWith('- -')) return this.startHrWatch('-', 2, false);
+          // Only ONE dash seen so far, with a run of 2+ trailing spaces
+          // and no second dash yet (e.g. "-   "): unlike the 2+-dash case
+          // just above, this can't still become a multi-dash thematic
+          // break candidate ("- - -" needs the SECOND dash by column 3),
+          // but it's also not necessarily committing to real content —
+          // openUlDecided() below already handles an all-spaces `s` as an
+          // empty-item-so-far (see its isAllSpaces branch), so committing
+          // here immediately (matching the pre-existing length<4 cases)
+          // is correct and must NOT be deferred like the length>=5
+          // catch-all's genuinely-still-ambiguous check does.
           return this.openUlDecided(p.slice(2), '-');
         }
-        if (/^(- )+$/.test(p) || /^(- )+-?$/.test(p)) return;
+        // Still nothing but "-" and spaces (in any amount, including a
+        // multi-space RUN — not just one space per dash, which the two
+        // regexes above already covered for exactly-one-space-each
+        // patterns): could still become a thematic break all the way to
+        // end of line ("- - - -    "), so keep deferring instead of
+        // committing to a list/nested-list interpretation early — a
+        // trailing run of 2+ spaces used to fall through to the
+        // nested-list branch below prematurely, misreading e.g.
+        // "- - - -    " (trailing 4 spaces) as 4 levels of empty nested
+        // list items instead of the thematic break it actually is.
+        if (/^-( *-)* *$/.test(p)) return;
         if (/^- /.test(p)) return this.openUlDecided(p.slice(2), '-');
         return this.startHrWatch('-', (p.match(/-/g)||[]).length, false);
 
