@@ -1144,8 +1144,17 @@ class MarkdownStreamer {
           if (i > 9 || (p[i] !== '.' && p[i] !== ')')) { this._blockDefault(ch); return; }
           if (i + 1 === p.length) return;
           if (p[i + 1] === ' ') {
+            // CommonMark 5.2: an ordered list can interrupt an open
+            // paragraph only when its start number is 1 — "14. text"
+            // right after a paragraph is just that paragraph's lazy
+            // continuation text, not a new list (unlike a bullet list,
+            // which can always interrupt one).
+            const startNum = parseInt(p.slice(0, i), 10);
+            if (this.dom.currentTag() === 'P' && this.dom.current.childNodes.length > 0 && startNum !== 1) {
+              this._blockDefault(ch); return;
+            }
             const contentCol = this.linePos;
-            this.openListItem('ol', this.lineIndent, p[i], parseInt(p.slice(0, i), 10), contentCol);
+            this.openListItem('ol', this.lineIndent, p[i], startNum, contentCol);
             this._bd();
             this.liAbsorb = { top: this.listStack[this.listStack.length - 1], base: contentCol, extra: 0 };
             return;
