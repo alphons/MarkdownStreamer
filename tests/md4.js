@@ -148,10 +148,28 @@ class MarkdownStreamer {
     // the matching flag set where the fence opens (case '`'/'~':).
     // Checked before the unconditional inCodeFence swallow just below,
     // which would otherwise happily feed ANY line into it regardless.
-    if (this.inCodeFence && this.fenceInBlockquote && this.linePos === 0 && ch !== '>') {
-      this.inCodeFence = false; this.fencePrefix = ''; this.closingFenceBuf = null;
-      this.fenceInBlockquote = false;
-      this.closeBlock();
+    if (this.inCodeFence && this.fenceInBlockquote) {
+      // NOTE: this.linePos is never incremented while inCodeFence (the
+      // unconditional swallow just below returns before reaching that
+      // counter), so tracking "is this the line's first character" needs
+      // its own dedicated flag instead — a stale linePos===0 would
+      // otherwise stay true for every character of the line, not just the
+      // first, and wrongly re-run this check (and its "> " stripping) on
+      // ordinary content characters too.
+      if (!this._fenceBqLineStarted) {
+        this._fenceBqLineStarted = true;
+        if (ch !== '>') {
+          this.inCodeFence = false; this.fencePrefix = ''; this.closingFenceBuf = null;
+          this.fenceInBlockquote = false;
+          this.closeBlock();
+        } else {
+          this._fenceBqAteMarker = true;
+          return; // consume the blockquote's own ">" marker, not fence content
+        }
+      } else if (this._fenceBqAteMarker) {
+        this._fenceBqAteMarker = false;
+        if (ch === ' ') return; // consume the single optional space after ">"
+      }
     }
     if (this.inCodeFence) {
       if (this.fencePrefix === null) { this.feedCodeFenceLine(ch); return; }
@@ -499,7 +517,7 @@ class MarkdownStreamer {
       this.sepRowEl = null;
     }
 
-    if (this.inCodeFence) { this.onCodeFenceNewline(); return; }
+    if (this.inCodeFence) { this._fenceBqLineStarted = false; this.onCodeFenceNewline(); return; }
     if (this.inIndentCode) {
       // A blockquote-relative indented code block (case '>':) can only
       // ever be continued by a LATER quoted line (see processChar()'s
@@ -590,7 +608,7 @@ class MarkdownStreamer {
         this.closeBlock(); this.inCodeFence = true; this.fenceChar = p[0];
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
         this.fenceOpenIndent = this.lineIndent;
-        this.fenceInBlockquote = this._inBlockquoteContent;
+        this.fenceInBlockquote = this._inBlockquoteContent; this._fenceBqLineStarted = true;
         this.onCodeFenceNewline();
       } else if (p[0] === '*' && /^\*([ \t]*\*)*[ \t]*$/.test(p) && (p.match(/\*/g)||[]).length >= 3) {
         this.makeHr();
@@ -845,6 +863,7 @@ class MarkdownStreamer {
     this._inListContinuation = false;
     this._blankBeforeNewItem = false;
     this.liAbsorb = null;
+    this._fenceBqLineStarted = false; this._fenceBqAteMarker = false;
     this.atxSkipLeadingSpace = false;
   }
 
@@ -1014,6 +1033,7 @@ class MarkdownStreamer {
           // ANY line's content into an open fence regardless of
           // whether this one ever continues the quote it opened in.
           this.fenceInBlockquote = this._inBlockquoteContent;
+          this._fenceBqLineStarted = true;
           this._bd(); return;
         }
         this._blockDefault(ch); return;
