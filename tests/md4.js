@@ -484,6 +484,18 @@ class MarkdownStreamer {
 
     if (this.inCodeFence) { this.onCodeFenceNewline(); return; }
     if (this.inIndentCode) {
+      // A blockquote-relative indented code block (case '>':) can only
+      // ever be continued by a LATER quoted line (see processChar()'s
+      // matching check for a non-blank one) — a blank line can't wait
+      // to see whether more quoted content follows the way an ordinary
+      // top-level or list-relative code block does, because a
+      // blockquote itself never survives a blank line via lazy
+      // continuation (CommonMark) regardless of what's inside it. End
+      // both right here instead of deferring via pendingIndentNL.
+      if (this.indentCodeInBlockquote && !this.blockDecided) {
+        this.closeBlock();
+        this.resetLine(); return;
+      }
       if (!this.blockDecided) this.pendingIndentNL++;
       else { if (this.textNode) this.textNode.data += '\n'.repeat(this.pendingIndentNL) + '\n'; this.pendingIndentNL = 0; }
       this.resetLine(); return;
@@ -925,13 +937,21 @@ class MarkdownStreamer {
           this.lastChar = rest[rest.length - 1];
           return;
         }
+        // Up to 3 leading spaces of a quoted line's own content are
+        // ordinary ignorable block-start indentation, exactly like at
+        // the top level (CommonMark) — e.g. ">    not code" (3 spaces,
+        // one short of the code trigger above) must read as the plain
+        // paragraph "not code", not literal leading spaces. Only
+        // reached with leadWs < 4 (the >= 4 case already returned above
+        // as code), so stripping all of it is always correct here.
+        const contentAfterIndent = rest.slice(leadWs);
         // Replay the content after the ">" markers through decideBlock
         // itself (not straight to inline text) so a heading, list, fence,
         // etc. inside a blockquote is recognized as one, not forced into a
         // paragraph. If dom.current is still an open P/LI/DD (ensureBlockquote
         // only resets when the quote depth actually changed), the normal
         // continuation checks in _blockDefault() etc. keep it open as usual.
-        for (const c of rest) {
+        for (const c of contentAfterIndent) {
           if (this.blockDecided) {
             if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
             this.onContentChar(c);
