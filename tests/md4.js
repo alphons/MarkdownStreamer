@@ -2009,13 +2009,31 @@ class MarkdownStreamer {
   onLinkChar(ch) {
     switch (this.linkState) {
       case 'bang':
-        if (ch === '[') { this.linkState = 'img_alt'; this.linkBuf = ''; this.urlBuf = ''; }
+        if (ch === '[') { this.linkState = 'img_alt'; this.linkBuf = ''; this.urlBuf = ''; this._imgAltDepth = 0; this._imgAltEscapeNext = false; }
         else { this.linkState = null; this.linkIsImage = false; this.appendToTextNode('!'); this.onInlineChar(ch); }
         return;
 
       case 'img_alt':
-        if (ch === ']') this.linkState = 'img_expect_paren';
-        else this.linkBuf += ch;
+        // Balanced-bracket tracking (CommonMark: an image's alt text is
+        // parsed as link text — nested "[...]" and "![...]" are legal
+        // content, e.g. "![foo ![bar](/url)](/url2)" — nesting one level
+        // deeper each unescaped "[", so the FIRST "]" doesn't wrongly end
+        // the outer alt text right after the inner one's own label starts
+        // (previously: "foo ![bar" got cut at "bar"'s own "]", losing
+        // everything from there on, since a bare unmatched-length count
+        // was never tracked at all). The buffered raw text (nested markup
+        // and all) is re-parsed for real once the TRUE matching "]"
+        // arrives, via _renderInlineToPlainText() below — this is only
+        // about finding where that closing bracket actually is.
+        if (this._imgAltEscapeNext) { this._imgAltEscapeNext = false; this.linkBuf += ch; return; }
+        if (ch === '\\') { this._imgAltEscapeNext = true; this.linkBuf += ch; return; }
+        if (ch === '[') { this._imgAltDepth = (this._imgAltDepth || 0) + 1; this.linkBuf += ch; return; }
+        if (ch === ']') {
+          if (this._imgAltDepth > 0) { this._imgAltDepth--; this.linkBuf += ch; return; }
+          this.linkState = 'img_expect_paren';
+          return;
+        }
+        this.linkBuf += ch;
         return;
 
       case 'img_expect_paren':
@@ -2211,6 +2229,12 @@ class MarkdownStreamer {
     img.src = ''; // set first so later resolving it in finalize() keeps src before alt in attribute order
     img.alt = this._renderInlineToPlainText(this.linkBuf);
     img.dataset.refKey = refKey;
+    // The raw (un-flattened) label text, for finalize()'s literal-text
+    // fallback if this reference never resolves — reconstructing from
+    // `alt` there would use the ALREADY-flattened plain text instead of
+    // the original source, silently dropping any markup it had (most
+    // visibly a nested "[...]", e.g. "![[foo]]" turning into "![foo]").
+    img.dataset.altRaw = this.linkBuf;
     if (isShortcut) img.dataset.refShortcut = '1';
     if (!insideLink) img.className = 'blk';
     this.dom.current.appendChild(img);
@@ -2225,6 +2249,22 @@ class MarkdownStreamer {
   // detached scratch element using the same inline machinery as real
   // content, then read back via textContent (which itself strips all
   // tags) — no separate plain-text renderer needed.
+  // Like el.textContent, except a nested <img> (CommonMark: an image's
+  // alt text is parsed the same as link text, so it may itself contain
+  // another image or link) contributes its OWN alt attribute instead of
+  // nothing — .textContent is always "" for an img (a void element with
+  // no children), which would otherwise silently drop a nested image's
+  // text entirely instead of flattening it in, same as a nested link's
+  // plain text already gets included via its child text nodes.
+  _plainTextOf(el) {
+    let out = '';
+    for (const n of el.childNodes) {
+      if (n.nodeType === 1 && n.tagName === 'IMG') out += n.getAttribute('alt') || '';
+      else if (n.nodeType === 1) out += this._plainTextOf(n);
+      else if (n.nodeType === 3) out += n.data;
+    }
+    return out;
+  }
   _renderInlineToPlainText(raw) {
     const scratch = document.createElement('span');
     const saved = {
@@ -2238,7 +2278,7 @@ class MarkdownStreamer {
     this.flushInlinePending();
     this._flushCodeSpans(scratch);
     this._flushEmphasis(scratch);
-    const text = scratch.textContent;
+    const text = this._plainTextOf(scratch);
     this.dom.current = saved.current; this.textNode = saved.textNode; this.inlinePending = saved.inlinePending;
     this.lastChar = saved.lastChar; this.prevCharWs = saved.prevCharWs; this.pendingDelimBefore = saved.pendingDelimBefore;
     this.linkState = saved.linkState; this.linkBuf = saved.linkBuf; this.urlBuf = saved.urlBuf; this.linkIsImage = saved.linkIsImage;
@@ -3926,9 +3966,10 @@ class MarkdownStreamer {
       const def = this.refDefs[key];
       if (def) {
         img.src = def.url; if (def.title) img.title = def.title;
-        img.removeAttribute('data-ref-key'); img.removeAttribute('data-ref-shortcut');
+        img.removeAttribute('data-ref-key'); img.removeAttribute('data-ref-shortcut'); img.removeAttribute('data-alt-raw');
       } else {
-        const literal = img.dataset.refShortcut ? `![${img.alt}]` : `![${img.alt}][${key}]`;
+        const raw = img.dataset.altRaw ?? img.alt;
+        const literal = img.dataset.refShortcut ? `![${raw}]` : `![${raw}][${key}]`;
         const parent = img.parentNode;
         if (parent) parent.replaceChild(document.createTextNode(literal), img);
       }
