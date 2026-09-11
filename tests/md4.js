@@ -1552,9 +1552,24 @@ class MarkdownStreamer {
       // returns to 'label_open' (not null) once this nested attempt is
       // done, exactly like an image nested in a link already did, so the
       // still-open OUTER label just keeps accumulating normally.
+      const nested = !!this.dom.find('A');
       const a = this.dom.push('a'); this.initAnchor(a);
       this.textNode = null;
       this.linkState = 'label_open'; this.urlBuf = ''; this.linkBuf = '';
+      // CommonMark reference-label matching uses the label's raw SOURCE
+      // text (case-folded/whitespace-collapsed), not its rendered
+      // content — "[*foo* bar][]" must match a "[*foo* bar]: ..."
+      // definition on the literal text "*foo* bar", asterisks and all,
+      // not the flattened "foo bar" a.textContent would give once "*foo*"
+      // has already become a real <em> live inline. Tracked in parallel
+      // with the live rendering (see the catch-all character-forwarding
+      // branch below), reset only for a genuinely NEW (non-nested) label
+      // — nested content's raw text keeps accumulating into the SAME
+      // (outer) buffer once this inner attempt resolves and control
+      // returns to the outer's label_open, since the outer's own
+      // eventual key needs it (a nested link inside its label already
+      // makes it ineligible to become a reference at all regardless).
+      if (!nested) this.linkLabelRaw = '';
       this.prevCharWs = false; return;
     }
 
@@ -1861,13 +1876,14 @@ class MarkdownStreamer {
         if (ch === ']') {
           this.flushInlinePending();
           this._popMarkers(); this.textNode = null;
-          const a = this.dom.find('A'); if (a) this.linkBuf = a.textContent;
+          const a = this.dom.find('A'); if (a) this.linkBuf = (this.linkLabelRaw ?? a.textContent);
           this.linkState = 'expect_paren'; return;
         }
         if (ch === '^' && this.linkBuf === '') {
           this.abortLinkElement(null);
           this.linkState = 'fn_ref'; this.linkBuf = ''; return;
         }
+        if (this.linkLabelRaw !== undefined) this.linkLabelRaw += ch;
         this.linkState = null; this.onInlineChar(ch); this.linkState = 'label_open';
         return;
 
