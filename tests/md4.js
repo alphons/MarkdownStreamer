@@ -1523,6 +1523,21 @@ class MarkdownStreamer {
       this.resolveInlinePending(ch); return;
     }
 
+    if (ch === '!' || ch === '[') {
+      // A still-pending emphasis/etc. run (e.g. the "*" in "*[foo*](/uri)",
+      // buffered as inlinePending waiting to see if more "*" follow, not
+      // yet resolved into a placeholder) must be resolved NOW, while
+      // dom.current is still whatever container it's currently in — "["
+      // is about to open a link, moving dom.current INTO its <a> for the
+      // label's content, and resolving this pending run only after that
+      // would place its placeholder as a CHILD of the <a> instead of a
+      // sibling alongside it. That's what let a later "*" INSIDE the
+      // label wrongly pair with it (_findOpenerSibling only walks direct
+      // siblings of dom.current, so this bug only bit exactly because
+      // both ended up, wrongly, in the same container) — CommonMark:
+      // "*[foo*]" must NOT let the trailing "*" close the leading one.
+      this.flushInlinePending();
+    }
     if (ch === '!') { this.linkState = 'bang'; this.linkIsImage = true; this.prevCharWs = false; return; }
     if (ch === '[') {
       // CommonMark: a link cannot CONTAIN a link — but that's a rule about
