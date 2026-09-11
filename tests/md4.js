@@ -232,7 +232,13 @@ class MarkdownStreamer {
       // back up to the <li> first so e.g. a blockquote here nests inside
       // it instead of popping all the way out of the list.
       const closedListRelativeCode = this.inIndentCode && this.indentCodeListCol != null && this.lineIndent >= this.indentCodeListCol;
-      if (closedListRelativeCode) this._ascendToLI();
+      // this.textNode still points at the just-closed <pre><code>'s own
+      // text node here — left alone, whatever decideBlock() opens next
+      // (e.g. a plain paragraph) can end up silently appending into that
+      // stale, already-detached-from-the-current-line node instead of
+      // getting a fresh one, merging it right back into the code block's
+      // content instead of becoming its own separate block.
+      if (closedListRelativeCode) { this._ascendToLI(); this.textNode = null; }
       this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null;
       if (this.pendingListBlank) {
         this.pendingListBlank = false;
@@ -280,13 +286,27 @@ class MarkdownStreamer {
         return;
       }
       if (ch === ' ') {
-        // 5th consecutive space after the marker: per CommonMark, only the
-        // first space is the required separator — content column snaps back
-        // to right after it, and every space from the 2nd on (already
-        // absorbed ones plus this one) is literal content instead.
+        // 5th consecutive space after the marker (1 required + 4 more) is
+        // CommonMark's indented-code-block trigger (same rule as a plain
+        // top-level "    code" line), not just more literal alignment —
+        // content column snaps back to right after the required
+        // separator, and an indented code block opens as this item's
+        // first block, anchored to the item's own content column instead
+        // of column 0 (matching the equivalent pendingListBlank/list-
+        // relative code-block logic elsewhere). dom.current is already
+        // the freshly-opened, still-empty <li> here (liAbsorb only
+        // exists in that exact window), so the <pre> nests directly in
+        // it without needing closeBlock()'s block-container navigation.
         a.top.contentCol = a.base;
         this.liAbsorb = null;
-        for (let i = 0; i < a.extra + 1; i++) { this.onContentChar(' '); }
+        const pre = this.dom.push('pre');
+        const code = document.createElement('code');
+        pre.appendChild(code);
+        this.textNode = document.createTextNode('');
+        code.appendChild(this.textNode);
+        this.inIndentCode = true; this.lastBlockEl = pre;
+        this.indentCodeListCol = a.base;
+        this._bd();
         return;
       }
       this.liAbsorb = null;
