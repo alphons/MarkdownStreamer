@@ -579,6 +579,7 @@ class MarkdownStreamer {
           this.ensureBlockquote(level);
         }
       } else if ((p[0] === '`' || p[0] === '~') && p.length >= 3 && p.split('').every(c => c === p[0])) {
+        this._preserveListNestingIfIndented();
         this.closeBlock(); this.inCodeFence = true; this.fenceChar = p[0];
         this.fenceCount = p.length; this.fencePrefix = null; this.closingFenceBuf = null;
         this.fenceOpenIndent = this.lineIndent;
@@ -3064,6 +3065,25 @@ class MarkdownStreamer {
     while (!['LI', 'UL', 'OL'].includes(this.dom.currentTag()) && this.dom.current !== this.dom.bottomStack) {
       this.dom.pop();
     }
+  }
+
+  // A new block-starting construct (fence, blockquote, heading, ...)
+  // encountered while dom.current is sitting somewhere INSIDE a list
+  // item's own nested content (most commonly: a blockquote nested in
+  // that item just ended because this line doesn't continue it) still
+  // belongs to that SAME item as its next block, as long as this line's
+  // indentation still reaches the item's content column — e.g. "- a\n
+  // > b\n  ```\n  c\n  ```\n- d\n" (spec example 321): the fence at
+  // column 2 matches the item's own content column, so it must stay
+  // nested in the <li>, not get popped all the way out to top level the
+  // way _popToBlockContainer() does by default (deliberately, for
+  // constructs that genuinely dedent below any list — see its own
+  // comment). Setting _inListContinuation here lets that same existing
+  // guard halt the upcoming closeBlock()'s pop at the right <li>
+  // instead, without needing a fresh mechanism.
+  _preserveListNestingIfIndented() {
+    const top = this.listStack[this.listStack.length - 1];
+    if (top && this.lineIndent >= top.contentCol) this._inListContinuation = true;
   }
 
   openListItem(type, indent, marker, startNum, contentCol) {
