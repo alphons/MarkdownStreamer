@@ -3591,6 +3591,24 @@ class MarkdownStreamer {
       const key = a.dataset.refKey || a.textContent.trim().toLowerCase();
       const def = this.refDefs[key];
       if (def) { a.href = def.url; if (def.title) a.title = def.title; delete a.dataset.refKey; }
+      else if (a.dataset.refKey) {
+        // An explicit "[label][ref]" whose ref never matched any
+        // definition — CommonMark: the WHOLE thing (both bracket pairs)
+        // falls back to literal text, same as the analogous img[data-
+        // ref-key] case just below already does. Left as a real,
+        // unresolved href="#" anchor otherwise, forever.
+        const parent = a.parentNode;
+        if (parent) {
+          // The ref key itself must stay exactly as typed for the
+          // lookup above (CommonMark doesn't unescape for matching
+          // purposes — see the comment on the analogous nested-bracket
+          // check earlier), but once it's just literal fallback text,
+          // ordinary backslash-escape processing applies to it same as
+          // any other text.
+          const literal = '[' + a.textContent + '][' + this._unescapeRaw(a.dataset.refKey) + ']';
+          parent.replaceChild(document.createTextNode(literal), a);
+        }
+      }
     });
 
     this.root.querySelectorAll('a[data-implicit-ref]').forEach(a => {
