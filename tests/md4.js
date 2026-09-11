@@ -2677,7 +2677,14 @@ class MarkdownStreamer {
       // heuristic would place outside <body> entirely) lands correctly as
       // a direct child, ready to move as-is.
       const template = document.createElement('template');
-      template.innerHTML = raw.trim();
+      // A type-1 block (script/pre/style/textarea, rawHtmlEndMode
+      // 'tag') is a single real element whose content is raw text
+      // (HTML5's RAWTEXT/RCDATA parsing) — its leading/trailing
+      // whitespace, including blank lines, is significant literal
+      // content, not block-level padding to strip. Every other mode
+      // trims (its content is a mix of block-level lines where the
+      // final line ending is just structural, not meaningful text).
+      template.innerHTML = this.rawHtmlEndMode === 'tag' ? raw : raw.trim();
       if (template.content.childNodes.length === 0) {
         // Truly nothing survived parsing at all (not even a leftover text
         // node) — e.g. raw was only a stray closing tag with nothing
