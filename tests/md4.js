@@ -1872,6 +1872,20 @@ class MarkdownStreamer {
       }
 
       case 'label_open':
+        // None of this state's own special characters apply while a
+        // raw "<...>" tag/autolink attempt is still being buffered
+        // (most commonly inside a QUOTED attribute value, e.g. "[foo
+        // <bar attr=\"](baz)\">" — the "]" and "(baz)" there are part of
+        // the tag's own attr="..." string, not link-closing syntax at
+        // all) — always delegate straight to the normal pipeline, same
+        // as the generic catch-all below, instead of letting '!'/']'/'^'
+        // hijack a character that actually belongs to that in-progress
+        // buffer.
+        if (this.autolinkBuf !== null) {
+          if (this.linkLabelRaw !== undefined) this.linkLabelRaw += ch;
+          this.linkState = null; this.onInlineChar(ch); this.linkState = 'label_open';
+          return;
+        }
         if (ch === '!') { this.linkState = 'bang'; this.linkIsImage = true; return; }
         if (ch === ']') {
           this.flushInlinePending();
