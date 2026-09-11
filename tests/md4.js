@@ -2877,6 +2877,19 @@ class MarkdownStreamer {
     // <li>) — toRoot() unconditionally here would blow that away along
     // with any genuinely stray nesting it's meant to clear.
     if (depth === 0 && this.dom.depth() > 1 && this.dom.currentTag() !== 'LI') this.dom.toRoot();
+    // Nesting a blockquote directly under a list item's own text (no
+    // blank line separating them, e.g. "* a\n  > b\n"): the CommonMark
+    // source line ending right before the blockquote's own line is a
+    // real newline character between the item's inline content and the
+    // blockquote, which the spec's reference HTML preserves as a
+    // literal text node — same fix already applied to openUlDecided()'s
+    // equivalent nested-sub-list case, for the same reason (so a
+    // whitespace-sensitive comparison doesn't see a false difference
+    // between "a<blockquote>" and "a\n<blockquote>").
+    if (depth === 0 && level > 0 && this.dom.currentTag() === 'LI') {
+      const last = this.dom.current.lastChild;
+      if (last && last.nodeType === 3 && last.data && !/\s$/.test(last.data)) last.data += '\n';
+    }
     while (depth < level) { this.dom.push('blockquote'); depth++; }
     while (depth > level) {
       if (this.dom.currentTag() === 'P') this.dom.pop();
