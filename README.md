@@ -18,7 +18,10 @@ A lightweight, streaming Markdown parser that renders directly into the DOM — 
 ### Synchronous (instant render)
 
 ```html
-<div id="output"></div>
+<div id="output" class="pane-output"></div>
+<link rel="stylesheet" href="md4.css">
+<link rel="stylesheet" href="md4-dark.css"> <!-- or md4-light.css -->
+<script src="md4-entities.js"></script>
 <script src="md4.js"></script>
 <script>
   const el = document.getElementById('output');
@@ -28,10 +31,15 @@ A lightweight, streaming Markdown parser that renders directly into the DOM — 
 </script>
 ```
 
+Notes:
+- `md4-entities.js` must load *before* `md4.js` — it defines the `ENTITY_MAP` used to decode HTML entities, kept in a separate file only to stay out of the main parser source.
+- `md4.css`'s rules are scoped to a `.pane-output` class, and rely on custom properties (`--accent`, `--text`, `--code-bg`, ...) defined by a theme file — pair it with `md4-dark.css` or `md4-light.css`, or supply your own values for those properties.
+
 ### Animated streaming
 
 ```html
-<div id="output"></div>
+<div id="output" class="pane-output"></div>
+<script src="md4-entities.js"></script>
 <script src="md4.js"></script>
 <script>
   async function stream() {
@@ -347,6 +355,22 @@ Named and numeric entities are decoded:
 &copy;  &amp;  &lt;  &gt;  &euro;  &mdash;  &#128512;
 ```
 
+### Math (non-standard extension)
+
+Not part of CommonMark, but supported since it's near-universal in AI-model output. Content is kept 100% literal (backslashes, underscores, asterisks are never touched by markdown processing) so it can be handed to a client-side renderer like KaTeX or MathJax:
+
+```markdown
+Inline: $E = mc^2$
+
+Block:
+
+$$
+\int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}
+$$
+```
+
+Inline math renders as `<span class="math math-inline">`, block math as `<div class="math math-block">` (which keeps both `$$` delimiter lines verbatim, matching what most auto-render math libraries expect).
+
 ---
 
 ## File overview
@@ -354,10 +378,16 @@ Named and numeric entities are decoded:
 | File | Description |
 |---|---|
 | `tests/md4.js` | The parser — include this in your page |
-| `tests/md4.css` | Full stylesheet for rendered output (dark/light) |
-| `tests/md4-light.css` | Light-theme-only stylesheet |
+| `tests/md4-entities.js` | HTML entity table (`ENTITY_MAP`) — load before `md4.js` |
+| `tests/md4.css` | Base stylesheet for rendered markdown output (theme-agnostic) |
+| `tests/md4-dark.css` | Dark-theme variables/overrides |
+| `tests/md4-light.css` | Light-theme variables/overrides |
+| `tests/md4-demo.css` | Styling for the demo page shell only (not needed for embedding) |
 | `tests/md4.html` | Interactive demo with live streaming, speed control, and theme toggle |
 | `tests/md4start.js` | Demo wiring (stream/stop buttons, theme toggle) |
+| `tests/run/render.js` | Node/JSDOM helper for rendering markdown to HTML in tests |
+| `tests/run/regression.js` | Regression test suite |
+| `tests/run/commonmark-report.js` | CommonMark spec conformance report |
 
 ---
 
