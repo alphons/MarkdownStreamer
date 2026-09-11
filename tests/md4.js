@@ -125,7 +125,7 @@ class MarkdownStreamer {
     this.urlParenDepth = 0; this.urlEscapeNext = false; this.urlRawBuf = ''; this.urlFailed = false;
   }
   _resetSetext()     { this.setextWatch = false; this.setextBuf = ''; this.setextChar = ''; this.setextFailed = false; this.setextTrailing = false; }
-  _resetHr()         { this.hrWatch = false; this.hrChar = ''; this.hrCount = 0; this.hrFailed = false; }
+  _resetHr()         { this.hrWatch = false; this.hrChar = ''; this.hrCount = 0; this.hrFailed = false; this.hrBuf = ''; }
   _doneTaskCheck()   { this.taskCheckDone = true; this.taskCheckBuf = null; }
   _bqLevel(p)   {
     let level = 0, i = 0;
@@ -1013,7 +1013,7 @@ class MarkdownStreamer {
           // hardcoded (and here, WRONG — only 1 real "-" was ever seen)
           // dash count, which lost every character typed after it.
           if (p[1] !== '-') { this._blockDefault(ch); return; }
-          return this.startHrWatch('-', 2, false);
+          return this.startHrWatch('-', 2, false, p);
         }
         if (p.length === 3) {
           if (p === '- -' || p === '- *') return;
@@ -1022,11 +1022,11 @@ class MarkdownStreamer {
           if (this._setextEligible() && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, false) : this._blockDefault(ch);
           }
-          return this.startHrWatch('-', p.split('-').length - 1, false);
+          return this.startHrWatch('-', p.split('-').length - 1, false, p);
         }
         if (p.length === 4) {
           if (p === '- - ') return;
-          if (p.startsWith('- -')) return this.startHrWatch('-', 2, false);
+          if (p.startsWith('- -')) return this.startHrWatch('-', 2, false, p);
           // Only ONE dash seen so far, with a run of 2+ trailing spaces
           // and no second dash yet (e.g. "-   "): unlike the 2+-dash case
           // just above, this can't still become a multi-dash thematic
@@ -1051,7 +1051,7 @@ class MarkdownStreamer {
         // list items instead of the thematic break it actually is.
         if (/^-([ 	]*-)*[ 	]*$/.test(p)) return;
         if (/^- /.test(p)) return this.openUlDecided(p.slice(2), '-');
-        return this.startHrWatch('-', (p.match(/-/g)||[]).length, false);
+        return this.startHrWatch('-', (p.match(/-/g)||[]).length, false, p);
 
       case '+':
         if (p.length === 1) return;
@@ -1243,6 +1243,7 @@ class MarkdownStreamer {
     if (this.hrWatch) {
       if (ch === this.hrChar) this.hrCount++;
       else if (ch !== ' ' && ch !== '\t') this.hrFailed = true;
+      this.hrBuf += ch;
       return;
     }
     if (this.defPending) {
@@ -2415,7 +2416,7 @@ class MarkdownStreamer {
     // 'trail': only whitespace may follow the title.
     if (!/\s/.test(ch)) d.failed = true;
   }
-  startHrWatch(c,n,f)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this._bd(); }
+  startHrWatch(c,n,f,buf)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this.hrBuf = buf; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
   openUlDecided(s, marker) {
     const base = this.linePos - s.length; // column right after marker + its 1 required space
@@ -3233,7 +3234,13 @@ class MarkdownStreamer {
     }
     this._appendOrNewParagraph(this.setextBuf);
   }
-  flushHrAsFallback()     { this._appendOrNewParagraph(this.hrChar.repeat(this.hrCount)); }
+  // NOT this.hrChar.repeat(this.hrCount): that reconstructs only the
+  // dash COUNT, discarding whatever real content interrupted the run
+  // (e.g. "---a---" fails as an hr candidate at "a", but "a" itself —
+  // and the second run of dashes after it — must survive into the
+  // literal fallback text, not just 6 dashes with no "a" at all).
+  // hrBuf holds every character exactly as typed since watching began.
+  flushHrAsFallback()     { this._appendOrNewParagraph(this.hrBuf); }
 
   // ── Table ──────────────────────────────────────────────────────────────────
   openTable() {
