@@ -71,6 +71,8 @@ class MarkdownStreamer {
 
     this.linePos = 0; this.lineIndent = 0; this.leadingWsChars = 0; this.blockDecided = false;
     this.pending = ''; this.lastBlockEl = null; this.lineStart = true;
+    this.codeSpanSetextWatch = null;
+    this._codeSpanLineHadChar = false;
     this.listStack = [];
     this.inlinePending = ''; this.textNode = null;
     this.lastChar = undefined; this.pendingDelimBefore = undefined;
@@ -193,6 +195,48 @@ class MarkdownStreamer {
     // (which would otherwise misread it as e.g. an indented-code trigger).
     // onNewline() handles converting the line ending itself to a space.
     if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      // linePos itself is never incremented for any character on this
+      // bypass path (see processChar()'s own linePos++ below, which this
+      // whole branch returns before reaching) — so it stays frozen at
+      // whatever it was when the code span opened, and can't tell
+      // onNewline() whether THIS line had any real content on it (needed
+      // to detect a genuinely blank line — see there). Track that
+      // separately instead; resetLine() clears it per line the normal way.
+      this._codeSpanLineHadChar = true;
+      // Same reasoning for this.lineStart: the normal per-character path
+      // clears it right after its own first use (processChar(), just
+      // below this whole bypassed branch) — this path must do the same
+      // itself, or every character of a bypassed line would wrongly look
+      // like the line's first one to the check just below.
+      const wasLineStart = this.lineStart;
+      this.lineStart = false;
+      // A line that's ENTIRELY "-"s or "="s still closes the enclosing
+      // paragraph as a setext heading even with a code span left open
+      // across it (CommonMark: block structure — here, "does the next
+      // line look like a setext underline" — is decided before inline
+      // content, so an unclosed backtick can't suppress it; see example
+      // #91, where "`Foo\n----\n`" is a heading "`Foo`", not code
+      // containing a literal "----"). Speculatively buffer such a line's
+      // characters instead of committing them as code-span content right
+      // away, since it isn't clear until the line ends (and no more of
+      // that char could still be its own line) whether it truly qualifies
+      // — onNewline() resolves the buffer either way: as a setext heading
+      // (aborting the code span back to literal text first — see
+      // _flushCodeSpans()) or, if it turns out not a clean underline
+      // after all, replayed as the ordinary code-span content it always
+      // was.
+      if (this.codeSpanSetextWatch) {
+        const w = this.codeSpanSetextWatch;
+        if (!w.trailing && ch === w.char) w.buf += ch;
+        else if (ch === ' ' || ch === '\t') { w.trailing = true; w.buf += ch; }
+        else { w.failed = true; w.buf += ch; }
+        return;
+      }
+      if (wasLineStart && (ch === '-' || ch === '=')) {
+        this.codeSpanSetextWatch = { char: ch, buf: ch, failed: false, trailing: false };
+        return;
+      }
+      if (this._codeSpanJoinSpacePending) { this._codeSpanJoinSpacePending = false; this.appendToTextNode(' '); }
       this.onInlineChar(ch); this.lastChar = ch; return;
     }
 
@@ -436,6 +480,46 @@ class MarkdownStreamer {
     // many further lines it takes to find a matching-length closer, or
     // until the enclosing block itself closes — see _flushCodeSpans(),
     // which reverts it to literal text if no closer is ever found.
+    if (this.codeSpanSetextWatch && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
+      const w = this.codeSpanSetextWatch;
+      this.codeSpanSetextWatch = null;
+      if (!w.failed) {
+        // A genuine setext underline: abort the still-open code span back
+        // to literal text (marker + whatever content it had accumulated so
+        // far — none of which ever crosses into THIS line, since that line
+        // was fully diverted into `w.buf` instead) and turn the enclosing
+        // paragraph into the heading, exactly like an ordinary setext
+        // resolution.
+        this._codeSpanJoinSpacePending = false;
+        this._flushCodeSpans(this.lastBlockEl);
+        this.resolveSetext(w.char === '=' ? 'h1' : 'h2');
+        this.needsJoinSpace = ['P', 'LI', 'DD'].includes(this.dom.currentTag());
+        this.resetLine(); return;
+      }
+      // Not a clean underline after all — this line was always just more
+      // code-span content, so the space this same line's own opening
+      // deferred (see the lineStart check above) is due now, before it —
+      // same as the ordinary per-character path just below would apply it.
+      if (this._codeSpanJoinSpacePending) { this._codeSpanJoinSpacePending = false; this.appendToTextNode(' '); }
+      for (const c of w.buf) { this.onInlineChar(c); this.lastChar = c; }
+    }
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`'
+        && !(this.linePos > 0 || this._codeSpanLineHadChar) && this.lastBlockEl && this.lastBlockEl.tagName === 'P') {
+      // A genuinely blank line always ends the enclosing paragraph
+      // (CommonMark 4.8) — even one still holding a still-open, unmatched
+      // code span, which never gets a chance to find its closer now and
+      // must revert to literal text, same as it would at any other point
+      // the enclosing block closes (_flushCodeSpans()). Without this, an
+      // unmatched backtick kept the paragraph (and the code span) open
+      // indefinitely across blank lines, silently swallowing everything
+      // after it until a matching backtick run eventually turned up
+      // somewhere later in the document, or never did.
+      this._codeSpanJoinSpacePending = false;
+      this._flushCodeSpans(this.lastBlockEl);
+      this._flushEmphasis(this.dom.current);
+      this.dom.pop(); this.textNode = null; this.lastBlockEl = null;
+      this.resetLine(); return;
+    }
     if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
       // A run of closing backticks sitting right at end-of-line, not yet
       // confirmed to be the full matching length (it could still continue
@@ -460,7 +544,13 @@ class MarkdownStreamer {
         }
         this.appendToTextNode('`'.repeat(this.codeCloseRun)); this.codeCloseRun = 0;
       }
-      this.appendToTextNode(' ');
+      // Deferred rather than appended right away: if the NEXT line turns
+      // out to be a setext underline (see codeSpanSetextWatch above), this
+      // whole code span gets aborted back to literal text and this space
+      // must never have existed at all — appending it now and hoping to
+      // strip it back out later would be much harder to get exactly right
+      // than simply not committing it until we know it's actually needed.
+      this._codeSpanJoinSpacePending = true;
       this.resetLine(); return;
     }
 
@@ -814,8 +904,20 @@ class MarkdownStreamer {
     // the undecided-line fallback above has already run. Same preserve-
     // across-the-newline treatment as the early check at the top of this
     // function, which only catches an ALREADY-open span from a prior line.
+    if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`'
+        && !(this.linePos > 0 || this._codeSpanLineHadChar) && this.lastBlockEl && this.lastBlockEl.tagName === 'P') {
+      this._flushCodeSpans(this.lastBlockEl);
+      this._flushEmphasis(this.dom.current);
+      this.dom.pop(); this.textNode = null; this.lastBlockEl = null;
+      this.resetLine(); return;
+    }
     if (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
-      this.appendToTextNode(' ');
+      // Deferred rather than appended right away — same reasoning as the
+      // earlier check near the top of this function: if the line that's
+      // ABOUT to start next turns out to be blank, this space must never
+      // have existed (the whole code span reverts to literal text right
+      // then instead), and if it turns out a setext underline, likewise.
+      this._codeSpanJoinSpacePending = true;
       this.resetLine(); return;
     }
     if (this.linkState === 'expect_paren') {
@@ -876,6 +978,7 @@ class MarkdownStreamer {
     this.inCell = false; this.tablePipePending = false; this.trailingSpaces = 0;
     this.lineStart = true; this.prevCharWs = true; this.bareUrlBuf = null;
     this.lastChar = undefined;
+    this._codeSpanLineHadChar = false;
     this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null; this.autolinkQuote = null;
     this.taskCheckBuf = null; this.taskCheckDone = false;
     this.codeCloseRun = 0;
