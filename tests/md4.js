@@ -356,7 +356,19 @@ class MarkdownStreamer {
       // replaces, just run BEFORE appending the line-ending space so nei-
       // ther gets lost or misordered.
       if (this.codeCloseRun) {
-        if (this.codeCloseRun === this.dom.current._mdMarker.length) { this._closeCodeSpan(); this.codeCloseRun = 0; this.resetLine(); return; }
+        if (this.codeCloseRun === this.dom.current._mdMarker.length) {
+          this._closeCodeSpan(); this.codeCloseRun = 0;
+          // The code span closed right at end-of-line — this is an
+          // ordinary soft line break between it and whatever text opens
+          // the NEXT line (e.g. "``` ```\naaa\n"), same as any other
+          // paragraph-continuation line ending; needsJoinSpace is what
+          // normally supplies that space, but nothing else on this path
+          // sets it (unlike _bd()'s equivalent paragraph-continuation
+          // case), so the next line's first character was landing
+          // directly against "</code>" with no separator at all.
+          this.needsJoinSpace = this.dom.currentTag() === 'P';
+          this.resetLine(); return;
+        }
         this.appendToTextNode('`'.repeat(this.codeCloseRun)); this.codeCloseRun = 0;
       }
       this.appendToTextNode(' ');
@@ -2327,7 +2339,13 @@ class MarkdownStreamer {
         // same resolution here, or those characters are silently lost —
         // sitting in the counter, never actually written anywhere.
         if (this.codeCloseRun && this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`') {
-          if (this.codeCloseRun === this.dom.current._mdMarker.length) this._closeCodeSpan();
+          if (this.codeCloseRun === this.dom.current._mdMarker.length) {
+            this._closeCodeSpan();
+            // Same soft-line-break gap as onNewline()'s equivalent
+            // codeCloseRun check — the code span closed right at EOL, so
+            // the next line's content still needs its usual join space.
+            this.needsJoinSpace = this.dom.currentTag() === 'P';
+          }
           else this.appendToTextNode('`'.repeat(this.codeCloseRun));
           this.codeCloseRun = 0;
         }
