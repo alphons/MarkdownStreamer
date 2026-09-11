@@ -500,7 +500,19 @@ class MarkdownStreamer {
       if (d.phase === 'gap' || (d.phase === 'dest' && d.dest === '')) {
         if (d.phase === 'gap') d.gapSawSpace = true; // the line ending itself counts as whitespace here too (e.g. an angle-bracketed destination's ">" reaching EOL with nothing else on that line yet)
         if (lineBlank) { this.flushDefPending(); this.resetLine(); return; } // nothing more can follow a blank line
-        this.resetLine(); return; // still might get a destination/title on the next line
+        // Only a bare destination that's ALREADY committed (non-empty) can
+        // ever fall back to a still-valid dest-only definition later if a
+        // title on a following line turns out malformed (see the 'trail'
+        // phase below and d.titleAfterLineBreak) — that's the only case
+        // needing an accurate '\n' in d.raw here. The dest==='' case has no
+        // destination yet at all, so it can only ever end up going through
+        // flushDefPending()'s generic invalid-definition literal-text
+        // fallback if this never pans out — which already turns its OWN
+        // "blank line" trigger into the paragraph break correctly without
+        // this line ending also being folded into d.raw as a redundant
+        // extra space.
+        if (d.dest !== '') d.raw += '\n';
+        d.destLineEnded = true; this.resetLine(); return; // still might get a destination/title on the next line
       }
       // phase 'trail', or an unterminated "<...>" destination — done either way.
       if (d.phase === 'dest' && d.angle) d.failed = true;
@@ -914,7 +926,14 @@ class MarkdownStreamer {
     // once this line's block type is already decided.
     if (this.defPending && this.defPending.type === 'ref') {
       if (this._feedDefChar(ch) !== 'reprocess') return;
-      this.flushDefPending();
+      // Delegates to the same helper the other two _feedDefChar() call
+      // sites use (rather than just flushing and falling through to the
+      // switch below directly) so a failed speculative title's stashed
+      // replay text (_defReplayPrefix) actually gets replayed — this path
+      // used to flush and fall through inline, silently dropping that
+      // text since only _reprocessAfterDef() knows to replay it.
+      this._reprocessAfterDef(ch);
+      return;
     }
     this.pending += ch;
     const p = this.pending;
@@ -1210,6 +1229,7 @@ class MarkdownStreamer {
             type: 'ref', key: p.slice(1, ci).toLowerCase(),
             phase: 'dest', dest: '', title: null, titleQuote: null,
             angle: undefined, parenDepth: 0, escapeNext: false, failed: false,
+            destLineEnded: false,
             raw: p, // exact original "[label]:" text, for a literal-text fallback if this never gets a destination (see flushDefPending())
           };
           this._bd(); return;
@@ -2628,6 +2648,13 @@ class MarkdownStreamer {
   _reprocessAfterDef(ch) {
     this.flushDefPending();
     this.pending = '';
+    // A failed speculative title (see _feedDefChar()'s 'trail' phase) left
+    // its own already-consumed text behind for us to replay first, in
+    // order, before `ch` itself — none of it is still sitting unread in
+    // the input the way a single-character reprocess's `ch` is.
+    const prefix = this._defReplayPrefix;
+    this._defReplayPrefix = null;
+    if (prefix) for (const c of prefix) this.processChar(c);
     this.decideBlock(ch);
   }
 
@@ -2674,7 +2701,19 @@ class MarkdownStreamer {
     }
     if (d.phase === 'gap') {
       if (/\s/.test(ch)) { d.gapSawSpace = true; return; }
-      if (d.gapSawSpace && (ch === '"' || ch === "'" || ch === '(')) { d.phase = 'title'; d.titleQuote = ch; d.title = ''; return; }
+      if (d.gapSawSpace && (ch === '"' || ch === "'" || ch === '(')) {
+        d.phase = 'title'; d.titleQuote = ch; d.title = ''; d.titleStartRawLen = d.raw.length - 1;
+        // Whether the destination's OWN line had already validly ended
+        // (nothing but whitespace after it) before this title attempt
+        // began — see the 'trail' phase below, where this decides whether
+        // a failed title just falls back to a still-valid dest-only
+        // definition (the title attempt started fresh on a later line) or
+        // invalidates the whole definition (it was crammed onto the same
+        // line as the destination, with nothing valid separating a
+        // complete dest-only definition from this garbage).
+        d.titleAfterLineBreak = d.destLineEnded;
+        return;
+      }
       // A title is OPTIONAL — content here that isn't whitespace or a
       // title-opening delimiter doesn't invalidate the definition (which
       // is already complete: label + destination, no title), it just
@@ -2700,8 +2739,25 @@ class MarkdownStreamer {
       if (ch === closeCh) { d.phase = 'trail'; return; }
       d.title += ch; return;
     }
-    // 'trail': only whitespace may follow the title.
-    if (!/\s/.test(ch)) d.failed = true;
+    // 'trail': only whitespace may follow the title — but content here
+    // doesn't invalidate the WHOLE definition the way a malformed
+    // destination does; CommonMark still accepts "[label]: dest" alone
+    // (no title) and treats the speculative title text as ordinary
+    // content starting right after the destination (e.g. #210: an
+    // unterminated title attempt on the line right after a valid bare
+    // destination becomes its own paragraph, the definition itself still
+    // registers with dest only). Stash that speculative text (the
+    // opening quote through the last character consumed so far, all of
+    // which _feedDefChar already swallowed one char at a time and so
+    // can't simply be left for the normal pipeline to see on its own)
+    // for _reprocessAfterDef() to replay, and signal reprocess same as
+    // the optional-title-never-started case just above.
+    if (!/\s/.test(ch)) {
+      if (!d.titleAfterLineBreak) { d.failed = true; return; }
+      this._defReplayPrefix = d.raw.slice(d.titleStartRawLen, d.raw.length - 1);
+      d.title = null;
+      return 'reprocess';
+    }
   }
   startHrWatch(c,n,f,buf)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this.hrBuf = buf; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
