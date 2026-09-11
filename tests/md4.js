@@ -1318,7 +1318,7 @@ class MarkdownStreamer {
       // here (swapped back to a literal "#" after that stripping has
       // already run and skipped over it) keeps "\###" from being
       // misread as an optional closing sequence and trimmed away.
-      const lit = this._isPunct(ch) ? ch : '\\' + ch;
+      const lit = this._isAsciiPunct(ch) ? ch : '\\' + ch;
       this.appendToTextNode(this.atxLevel && ch === '#' ? '\x00' : lit);
       this.prevCharWs = false; return;
     }
@@ -1783,7 +1783,7 @@ class MarkdownStreamer {
       this.urlEscapeNext = false;
       // Only ASCII punctuation is a recognized escape (CommonMark 2.4) —
       // anything else keeps the backslash literal, both characters kept.
-      const lit = this._isPunct(ch) ? ch : '\\' + ch;
+      const lit = this._isAsciiPunct(ch) ? ch : '\\' + ch;
       if (this.urlPhase === 'dest') this.urlDest += lit;
       else if (this.urlPhase === 'title') this.urlTitle += lit;
       else this.urlFailed = true;
@@ -1881,7 +1881,18 @@ class MarkdownStreamer {
   }
 
   // ── Delimiter flanking (CommonMark 6.2) ────────────────────────────────────
-  _isPunct(ch) { return ch !== undefined && ch !== null && /[!-/:-@[-`{-~]/.test(ch); }
+  // Backslash escapes (CommonMark 2.4) may ONLY target ASCII punctuation —
+  // narrower than, and NOT to be confused with, the Unicode-wide
+  // "punctuation" definition emphasis flanking uses just below (2.4's own
+  // example: "\φ" and "\«" stay literal backslash-then-character, since φ
+  // and « aren't ASCII, even though « IS Unicode punctuation).
+  _isAsciiPunct(ch) { return ch !== undefined && ch !== null && /[!-/:-@[-`{-~]/.test(ch); }
+  // CommonMark 6.2 defines "punctuation" for emphasis flanking as any
+  // Unicode P (punctuation) or S (symbol) character — not just ASCII
+  // punctuation — so e.g. "£"/"€" (Unicode Sc, currency symbols) count
+  // too: "*£*bravo." must not open emphasis, same as "*!*bravo." with an
+  // ASCII punctuation character wouldn't.
+  _isPunct(ch) { return ch !== undefined && ch !== null && /[\p{P}\p{S}]/u.test(ch); }
 
   // A failed link/image destination attempt falls back to literal text
   // reconstructed from urlRawBuf, which holds every character exactly as
@@ -1894,7 +1905,7 @@ class MarkdownStreamer {
   _unescapeRaw(str) {
     let out = '';
     for (let i = 0; i < str.length; i++) {
-      if (str[i] === '\\' && i + 1 < str.length && this._isPunct(str[i + 1])) { out += str[i + 1]; i++; }
+      if (str[i] === '\\' && i + 1 < str.length && this._isAsciiPunct(str[i + 1])) { out += str[i + 1]; i++; }
       else out += str[i];
     }
     return this._decodeEntities(out);
@@ -2190,7 +2201,7 @@ class MarkdownStreamer {
     const d = this.defPending;
     if (d.escapeNext) {
       d.escapeNext = false;
-      const lit = this._isPunct(ch) ? ch : '\\' + ch;
+      const lit = this._isAsciiPunct(ch) ? ch : '\\' + ch;
       if (d.phase === 'dest') d.dest += lit; else if (d.phase === 'title') d.title += lit;
       return;
     }
