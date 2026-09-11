@@ -444,7 +444,7 @@ class MarkdownStreamer {
       // may never come, silently swallowing everything after it in the
       // meantime (the actual bug this guard exists to prevent).
       if (d.failed) { this.flushDefPending(); this.resetLine(); return; }
-      if (d.phase === 'dest' && !d.angle && d.dest !== '') d.phase = 'gap'; // bare dest ends at whitespace, incl. a line ending
+      if (d.phase === 'dest' && !d.angle && d.dest !== '') { d.phase = 'gap'; d.gapSawSpace = true; } // bare dest ends at whitespace, incl. a line ending
       if (d.phase === 'title') { d.title += '\n'; this.resetLine(); return; }
       // NOT this.pending — that's already been cleared (by _bd(), when the
       // definition itself first started) and stays empty the whole time
@@ -455,6 +455,7 @@ class MarkdownStreamer {
       // was typed since the last line ending.
       const lineBlank = this.linePos === 0;
       if (d.phase === 'gap' || (d.phase === 'dest' && d.dest === '')) {
+        if (d.phase === 'gap') d.gapSawSpace = true; // the line ending itself counts as whitespace here too (e.g. an angle-bracketed destination's ">" reaching EOL with nothing else on that line yet)
         if (lineBlank) { this.flushDefPending(); this.resetLine(); return; } // nothing more can follow a blank line
         this.resetLine(); return; // still might get a destination/title on the next line
       }
@@ -2413,7 +2414,14 @@ class MarkdownStreamer {
         if (d.angle) return;
       }
       if (d.angle) {
-        if (ch === '>') { d.phase = 'gap'; return; }
+        // A ">" closes the angle-bracketed destination unambiguously, no
+        // separating whitespace needed before it — but a TITLE after it
+        // still does, same as for a bare destination (CommonMark: dest
+        // and title must be separated by whitespace). Marked false here
+        // (not yet seen) rather than true, unlike the bare-destination
+        // case just below, which transitions to 'gap' ONLY on whitespace
+        // in the first place.
+        if (ch === '>') { d.phase = 'gap'; d.gapSawSpace = false; return; }
         if (ch === '<') d.failed = true;
         d.dest += ch; return;
       }
@@ -2422,19 +2430,29 @@ class MarkdownStreamer {
         if (d.parenDepth > 0) { d.parenDepth--; d.dest += ch; return; }
         d.failed = true; d.dest += ch; return;
       }
-      if (/\s/.test(ch)) { d.phase = 'gap'; return; }
+      if (/\s/.test(ch)) { d.phase = 'gap'; d.gapSawSpace = true; return; }
       d.dest += ch; return;
     }
     if (d.phase === 'gap') {
-      if (/\s/.test(ch)) return;
-      if (ch === '"' || ch === "'" || ch === '(') { d.phase = 'title'; d.titleQuote = ch; d.title = ''; return; }
+      if (/\s/.test(ch)) { d.gapSawSpace = true; return; }
+      if (d.gapSawSpace && (ch === '"' || ch === "'" || ch === '(')) { d.phase = 'title'; d.titleQuote = ch; d.title = ''; return; }
       // A title is OPTIONAL — content here that isn't whitespace or a
       // title-opening delimiter doesn't invalidate the definition (which
       // is already complete: label + destination, no title), it just
       // means the definition ENDS right here, and this character belongs
       // to whatever comes next instead (e.g. the "bar" that starts a
       // setext heading in "[foo]: /url\nbar\n===\n"). Signal the caller to
-      // finalize now and reprocess `ch` through the normal pipeline.
+      // finalize now and reprocess `ch` through the normal pipeline —
+      // but ONLY once real whitespace has actually separated the
+      // destination from here; without it (e.g. "[foo]: <bar>(baz)",
+      // where the angle-bracketed destination's own closing ">"
+      // transitioned straight into 'gap' with no whitespace at all —
+      // unlike a bare destination, which can only ever REACH 'gap' via
+      // whitespace in the first place), this character is immediately
+      // adjacent to the destination with nothing valid between them,
+      // which CommonMark treats as invalidating the whole definition
+      // rather than just skipping an optional title.
+      if (!d.gapSawSpace) { d.failed = true; return; }
       return 'reprocess';
     }
     if (d.phase === 'title') {
