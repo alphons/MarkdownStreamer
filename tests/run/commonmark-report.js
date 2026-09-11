@@ -15,39 +15,56 @@
 // default in normal use (see the constructor's opts.commonMarkStrict).
 const { render } = require('./render');
 const cases = require('./commonmark-spec.json');
+const { JSDOM } = require('jsdom');
+
+// A dedicated, reused document purely for re-parsing HTML strings through a
+// real browser-grade HTML parser before comparing them (see normalize()
+// below) — separate from render.js's per-call jsdom instance, which runs
+// the actual md4.js parser under test.
+const { document: normDoc } = new JSDOM('<!DOCTYPE html><div></div>').window;
 
 // Loose comparison, so the score reflects real structural/content
-// conformance rather than noise from two deliberate, documented md4.js
-// design choices plus block-formatting whitespace:
-//  - md4.js always adds target="_blank" rel="noopener noreferrer" to <a>
-//    (spec examples have plain <a href>) — stripped before comparing.
-//  - a standalone (non-linked) <img> gets class="blk" for block display
-//    (see openTable/markStandaloneImages) — stripped before comparing.
-//  - the spec pretty-prints block tags on their own line and represents a
-//    soft line break as a literal newline; md4.js emits compact HTML and
-//    represents a soft line break as a space — both render identically in
-//    a browser. Whitespace runs are collapsed to a single space (so a
-//    soft-break space and a literal newline compare equal), and any
-//    whitespace that ends up directly between '>' and '<' is then dropped
+// conformance rather than noise from:
+//  - two deliberate, documented md4.js design choices: it always adds
+//    target="_blank" rel="noopener noreferrer" to <a> (spec examples have
+//    plain <a href>), and a standalone (non-linked) <img> gets class="blk"
+//    for block display (see openTable/markStandaloneImages) — both
+//    stripped before comparing.
+//  - pure HTML-serialization noise that can never survive a real DOM
+//    round-trip regardless of how faithfully md4.js parsed the input: a
+//    self-closing slash on a non-void element, an unclosed tag that gets
+//    auto-nested/closed, attribute order, U+00A0 vs "&nbsp;", etc. The spec
+//    JSON's "expected" html is produced by a reference implementation that
+//    concatenates strings and never runs its own output back through an
+//    HTML parser — so for raw-HTML-passthrough cases in particular, its
+//    "expected" string is sometimes not the DOM a browser would ever
+//    actually produce from that string. md4.js parses straight into a
+//    real, live DOM (see e.g. flushRawHtml()'s <template>.innerHTML=), so
+//    the fair comparison is "what DOM does each side resolve to", not "are
+//    the two source strings byte-identical". Both sides are re-parsed
+//    through the same real HTML parser (jsdom, matching what any actual
+//    browser would do) before comparing, so a difference only counts as a
+//    failure when it reflects an actual difference in the rendered result.
+//  - the spec also pretty-prints block tags on their own line and
+//    represents a soft line break as a literal newline; md4.js emits
+//    compact HTML and represents a soft line break as a space — both
+//    render identically in a browser. Whitespace runs are collapsed to a
+//    single space (so a soft-break space and a literal newline compare
+//    equal), and any whitespace directly between '>' and '<' is dropped
 //    entirely (pure block-formatting indentation, not text content).
+function throughDom(html) {
+  const el = normDoc.createElement('div');
+  el.innerHTML = html;
+  return el.innerHTML;
+}
+
 function normalize(html) {
-  return html
-    .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
-    .replace(/ class="blk"/g, '')
-    // a live DOM's innerHTML always serializes a literal U+00A0 character as
-    // the "&nbsp;" entity; the spec's own JSON keeps it as a literal char.
-    .replace(/&nbsp;/g, ' ')
-    // void-element self-closing slash: a real DOM/innerHTML can never
-    // produce "<br />" or "<img ... />", only "<br>"/"<img ...>" — not a
-    // fixable difference, and attribute order on a real element is
-    // insertion-order, not alphabetical, so tolerate that too for <img>.
-    .replace(/<br\s*\/?>/g, '<br>')
-    .replace(/<hr\s*\/?>/g, '<hr>')
-    .replace(/<img([^>]*?)\s*\/>/g, '<img$1>')
-    .replace(/<img ([^>]*)>/g, (_, attrs) => {
-      const tokens = attrs.trim().match(/[\w-]+(?:="[^"]*"|='[^']*')?/g) || [];
-      return '<img ' + tokens.sort().join(' ') + '>';
-    })
+  return throughDom(
+    html
+      .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
+      .replace(/ class="blk"/g, '')
+  )
+    .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/>\s+</g, '><')
     .trim();
