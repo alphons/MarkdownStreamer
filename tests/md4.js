@@ -193,8 +193,13 @@ class MarkdownStreamer {
         // top-level _popToBlockContainer() dance, which would pop OUT of
         // the <li> entirely (there's nothing else open below it to close).
         const top = this.listStack[this.listStack.length - 1];
-        if (this.pendingListBlank && top && this.lineIndent >= top.contentCol + 4) {
-          this._markListLoose(top);
+        if ((this.pendingListBlank || this.pendingEmptyItem) && top && this.lineIndent >= top.contentCol + 4) {
+          // pendingEmptyItem: this is the item's very FIRST (and, if
+          // nothing else follows, only) block — e.g. "-\n      baz\n" —
+          // not a second one separated from a first by a blank line, so
+          // unlike the pendingListBlank case, it does NOT make the list
+          // loose (CommonMark 5.3).
+          if (this.pendingListBlank) this._markListLoose(top);
           if (!this.inIndentCode) {
             const pre = this.dom.push('pre');
             const code = document.createElement('code');
@@ -203,7 +208,7 @@ class MarkdownStreamer {
             this.inIndentCode = true; this.lastBlockEl = pre;
           }
           this.indentCodeListCol = top.contentCol;
-          this.pendingListBlank = false;
+          this.pendingListBlank = false; this.pendingEmptyItem = false;
           // A tab can overshoot the trigger column (tabs jump to the next
           // multiple of 4, not one column at a time) — whatever's past the
           // threshold is still literal indentation WITHIN the code content,
@@ -3123,6 +3128,14 @@ class MarkdownStreamer {
         // bookkeeping set needsJoinSpace=true merely because dom.current
         // was sitting at the (as yet empty) <li>; not a real soft break.
         this.needsJoinSpace = false;
+        // Same fenceOpenIndent fix as the fromBlank branch above, and for
+        // the identical reason — this.lineIndent was just reset to 0
+        // right above, which a fence opening here (e.g. "-\n  ```\n  bar\n
+        // ```\n", the item's first content is straight away a fence) would
+        // otherwise record as its own opening indent, understripping (or
+        // in this case not stripping at all) every content line's shared
+        // 2-space indent instead of the item's real content column.
+        if (ch === '`' || ch === '~') this.lineIndent = top.contentCol;
       }
       // Whatever decideBlock() opens for `ch` (a fence, table, blockquote,
       // ...) must stay nested inside THIS <li> — closeBlock() (called by
