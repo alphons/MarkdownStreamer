@@ -118,7 +118,14 @@ class MarkdownStreamer {
   _bd()              { this.blockDecided = true; this.pending = ''; }
   _pop(el)           { this.dom.popTo(el); this.dom.pop(); }
   _popMarkers()      { while (this.dom.current._mdMarker) this.dom.pop(); }
-  _resetLinkUrl()    { this.linkState = null; this.urlBuf = ''; this.textNode = null; this._resetUrlParse(); }
+  // A link attempt that just resolved (successfully or not) may itself
+  // have been nested inside a still-open OUTER link's label (see case
+  // '[' above) — if so, dom.current (already repositioned by whatever
+  // just ran: _pop() on success, or abortLinkElement()'s unwrap on
+  // failure) is back inside that outer <a>, so dom.find('A') finds it
+  // and parsing resumes at 'label_open' instead of ending link-parsing
+  // entirely, the same way an image nested in a link already resumed.
+  _resetLinkUrl()    { this.linkState = this.dom.find('A') ? 'label_open' : null; this.urlBuf = ''; this.textNode = null; this._resetUrlParse(); }
   _resetUrlParse()   {
     this.urlPhase = 'dest'; this.urlAngle = undefined;
     this.urlDest = ''; this.urlTitle = null; this.urlTitleQuote = null;
@@ -1511,15 +1518,18 @@ class MarkdownStreamer {
 
     if (ch === '!') { this.linkState = 'bang'; this.linkIsImage = true; this.prevCharWs = false; return; }
     if (ch === '[') {
-      // CommonMark: links cannot nest — a "[" while already inside an open
-      // link label is just a literal character (an image CAN still nest
-      // inside a link, handled separately via "bang" above). Not the full
-      // bracket-matching algorithm (which would also let an outer "["
-      // "reclaim" this position if the resulting inner "[...]" never turns
-      // out to be a valid link itself) — a scoped, lower-risk improvement
-      // over unconditionally opening a nested <a>, which produced invalid
-      // nested-anchor markup for any "[...[...]...]" content.
-      if (this.dom.find('A')) { this.appendToTextNode(ch); this.prevCharWs = false; return; }
+      // CommonMark: a link cannot CONTAIN a link — but that's a rule about
+      // what the OUTER one is allowed to successfully become once ITS OWN
+      // "]" and destination are seen (checked there, by looking for a
+      // nested <a> in its label), not a reason to refuse even trying a
+      // NESTED "[" in the first place. So this always opens a fresh,
+      // independent <a> + label_open attempt, live-nested inside whatever
+      // is currently open (structurally "invalid" HTML for the moment,
+      // same idea as an unresolved <em> placeholder) — resolved the same
+      // way a top-level one would be, and _resetLinkUrl() below already
+      // returns to 'label_open' (not null) once this nested attempt is
+      // done, exactly like an image nested in a link already did, so the
+      // still-open OUTER label just keeps accumulating normally.
       const a = this.dom.push('a'); this.initAnchor(a);
       this.textNode = null;
       this.linkState = 'label_open'; this.urlBuf = ''; this.linkBuf = '';
@@ -1853,29 +1863,21 @@ class MarkdownStreamer {
       case 'expect_paren':
         if (ch === '(') { this.linkState = 'url'; this.urlBuf = ''; this._resetUrlParse(); }
         else if (ch === '[') { this.linkState = 'ref_id'; this.urlBuf = ''; }
-        else if (ch === ']') {
-          // "]]" or longer — the PREVIOUS "]" (the one that got us into
-          // this state) didn't actually close the label after all
-          // (nothing valid follows it), so IT becomes literal label
-          // content now — and THIS "]" gets a fresh chance to be the real
-          // closing bracket, by going back to label_open and immediately
-          // re-dispatching it there. A minimal, targeted piece of
-          // CommonMark's full bracket-matching algorithm (which in
-          // general also lets an even EARLIER unmatched "[" reclaim a
-          // position — not implemented — but this covers the common
-          // "multiple stray closing brackets in one label" case, e.g.
-          // "[link [foo [bar]]](/uri)"). The <a> is still open here
-          // (label_open's own "]" handling never closes it, only ends the
-          // label-accumulation phase), so the literal "]" just becomes
-          // ordinary label content.
-          this.appendToTextNode(']');
-          this.linkState = 'label_open';
-          this.onLinkChar(ch);
-        }
         else {
-          const a = this.dom.find('A');
-          if (a) { a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a); }
-          this._resetLinkUrl();
+          // Nothing valid follows the label's "]" after all (an
+          // ordinary character, OR another "]" immediately — e.g.
+          // "[link [foo [bar]]](/uri)": "bar"'s own "]" reaches here,
+          // finds a SECOND "]" right after with no "(...)"/"[...]", so
+          // "bar" is just a (failed, since no such reference exists)
+          // shortcut-reference attempt) — resolve THIS bracket as a
+          // shortcut reference (or, if nested inside another still-open
+          // link, immediately fail/succeed rather than deferring — see
+          // _finalizeShortcutRef()) and then give `ch` a FRESH chance
+          // through the normal pipeline: if it's itself another "]", it
+          // may well be the NEXT enclosing link's own real closer now
+          // that this inner one is resolved, handled the same way any
+          // ordinary label_open "]" is.
+          this._finalizeShortcutRef();
           if (ch !== '\n') this.onInlineChar(ch);
         }
         return;
@@ -1883,8 +1885,25 @@ class MarkdownStreamer {
       case 'ref_id':
         if (ch === ']') {
           const refKey = (this.urlBuf.trim() || this.linkBuf.trim()).toLowerCase();
-          const def = this.refDefs[refKey];
           const a = this.dom.find('A');
+          if (a && a.querySelector('a')) {
+            // Same "a link cannot contain a link" rule as the inline
+            // '(...)' case — refused regardless of whether refKey turns
+            // out to match a real definition. The "[refKey]" that broke
+            // it is NOT just dead literal text once that happens, though
+            // — CommonMark reprocesses it as fresh content that may
+            // start its own, entirely independent bracket sequence (e.g.
+            // "[foo [bar](/uri)][ref]": once the outer fails, "[ref]"
+            // becomes its OWN separate shortcut/explicit reference, not
+            // inert text glued onto the aborted outer's label).
+            const refText = '[' + this.urlBuf + ']';
+            a.insertBefore(document.createTextNode('['), a.firstChild);
+            a.appendChild(document.createTextNode(']'));
+            this.abortLinkElement(null);
+            for (const c of refText) { this.onInlineChar(c); this.lastChar = c; }
+            return;
+          }
+          const def = this.refDefs[refKey];
           if (a) {
             if (def) { a.href = def.url; if (def.title) a.title = def.title; }
             else { a.href = '#'; a.dataset.refKey = refKey; }
@@ -1897,20 +1916,25 @@ class MarkdownStreamer {
       case 'url': {
         const result = this._feedUrlChar(ch);
         if (result !== null) {
-          if (result.failed) {
-            // Invalid destination/title syntax — the "[label]" was never
-            // really a link; unwrap the <a> (its content, e.g. already-
-            // rendered emphasis inside the label, stays as plain content,
-            // with a literal "[" restored before it — never written
-            // earlier, since "[" commits straight to a real <a> for the
-            // live-streaming case) and append "(" + the whole failed
-            // attempt, exactly as typed.
-            const a = this.dom.find('A');
+          const a = this.dom.find('A');
+          // CommonMark: a link cannot CONTAIN a link — a nested "[...]"
+          // inside this label may have already resolved into a real,
+          // live-nested <a> (see case '[' above), in which case this
+          // outer attempt is refused regardless of whether its own
+          // destination/title syntax is otherwise perfectly valid.
+          if (result.failed || (a && a.querySelector('a'))) {
+            // Invalid destination/title syntax (or a forbidden nested
+            // link) — the "[label]" was never really a link; unwrap the
+            // <a> (its content, e.g. already-rendered emphasis OR a
+            // genuinely valid nested link, stays as plain content, with
+            // a literal "[" restored before it — never written earlier,
+            // since "[" commits straight to a real <a> for the live-
+            // streaming case) and append "(" + the whole failed attempt,
+            // exactly as typed.
             if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
             this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
           }
           else {
-            const a = this.dom.find('A');
             if (a) { a.href = result.url; if (result.title) a.title = result.title; this._pop(a); }
             this._resetLinkUrl();
           }
@@ -1962,6 +1986,47 @@ class MarkdownStreamer {
     this.lastChar = saved.lastChar; this.prevCharWs = saved.prevCharWs; this.pendingDelimBefore = saved.pendingDelimBefore;
     this.linkState = saved.linkState; this.linkBuf = saved.linkBuf; this.urlBuf = saved.urlBuf; this.linkIsImage = saved.linkIsImage;
     return text;
+  }
+
+  // Walks UP from el's parent (not el itself) looking for an enclosing
+  // <a> — used to tell a NESTED bracket attempt (one opened while
+  // another link was already open, see case '[') apart from a top-level
+  // one, since a nested one can't defer resolution to finalize() the
+  // way a top-level shortcut/collapsed reference does (see the
+  // 'expect_paren'/'ref_id' call sites).
+  _findEnclosingA(el) {
+    for (let n = el.parentNode; n && n !== this.dom.bottomStack?.parentNode; n = n.parentNode) {
+      if (n.tagName === 'A') return n;
+    }
+    return null;
+  }
+
+  // Resolves the currently-open link attempt as a shortcut reference
+  // ("[label]" with nothing else — no "(...)" or "[...]" — following),
+  // called once from 'expect_paren' whenever nothing valid follows the
+  // label's own "]". A NESTED attempt (opened while another link was
+  // already open, see case '[') can't defer resolution to finalize()
+  // the way a top-level one normally does (data-implicit-ref) — whether
+  // it resolves decides right now whether the ENCLOSING link is even
+  // allowed to succeed (its own eventual "]" checks via
+  // querySelector('a') for a real nested link), so it's checked
+  // immediately against refDefs as they stand so far instead. Matches
+  // real-world usage (a definition a nested bracket references is
+  // essentially never declared LATER in the document) at the cost of
+  // the rare forward-reference case.
+  _finalizeShortcutRef() {
+    const a = this.dom.find('A');
+    if (!a) { this._resetLinkUrl(); return; }
+    if (a.querySelector('a') || this._findEnclosingA(a)) {
+      const def = !a.querySelector('a') ? this.refDefs[this.linkBuf.trim().toLowerCase()] : null;
+      if (def) { a.href = def.url; if (def.title) a.title = def.title; this._pop(a); this._resetLinkUrl(); return; }
+      a.insertBefore(document.createTextNode('['), a.firstChild);
+      a.appendChild(document.createTextNode(']'));
+      this.abortLinkElement(null);
+      return;
+    }
+    a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a);
+    this._resetLinkUrl();
   }
 
   abortLinkElement(extraCh) {
