@@ -1261,7 +1261,39 @@ class MarkdownStreamer {
       if (this.autolinkBuf === '!-' && ch === '-') { this.autolinkBuf = '!--'; return; }
       if (this.autolinkBuf.startsWith('!--')) {
         this.autolinkBuf += ch;
-        if (this.autolinkBuf.endsWith('-->')) { this.autolinkBuf = null; this.prevCharWs = false; }
+        if (this.autolinkBuf.endsWith('-->')) { this._insertRawInline('<' + this.autolinkBuf); this.autolinkBuf = null; this.prevCharWs = false; }
+        return;
+      }
+      // Processing instruction: "<?...?>" (HTML block type 3's inline
+      // equivalent) — content is fully literal, ends at the first "?>",
+      // may span multiple lines.
+      if (this.autolinkBuf === '' && ch === '?') { this.autolinkBuf = '?'; return; }
+      if (this.autolinkBuf[0] === '?') {
+        this.autolinkBuf += ch;
+        if (this.autolinkBuf.endsWith('?>')) { this._insertRawInline('<' + this.autolinkBuf); this.autolinkBuf = null; this.prevCharWs = false; }
+        return;
+      }
+      // CDATA: "<![CDATA[...]]>" (type 5) — buffer the fixed opener
+      // literally one character at a time (falling through to ordinary
+      // handling below the moment it stops matching, e.g. "<![foo" isn't
+      // CDATA at all), then run to the first "]]>".
+      if ('![CDATA['.startsWith(this.autolinkBuf) && this.autolinkBuf.length < '![CDATA['.length
+          && '![CDATA['.startsWith(this.autolinkBuf + ch)) {
+        this.autolinkBuf += ch;
+        return;
+      }
+      if (this.autolinkBuf.startsWith('![CDATA[')) {
+        this.autolinkBuf += ch;
+        if (this.autolinkBuf.endsWith(']]>')) { this._insertRawInline('<' + this.autolinkBuf); this.autolinkBuf = null; this.prevCharWs = false; }
+        return;
+      }
+      // Declaration: "<!UPPERCASE ...>" (type 4) — content is literal,
+      // ends at the first ">" (unlike a comment/PI/CDATA, no multi-
+      // character closer).
+      if (this.autolinkBuf === '!' && /[A-Z]/.test(ch)) { this.autolinkBuf = '!' + ch; this.autolinkDecl = true; return; }
+      if (this.autolinkDecl) {
+        this.autolinkBuf += ch;
+        if (ch === '>') { this._insertRawInline('<' + this.autolinkBuf); this.autolinkBuf = null; this.autolinkDecl = false; this.prevCharWs = false; }
         return;
       }
       if (this.autolinkQuote) {
@@ -1336,7 +1368,7 @@ class MarkdownStreamer {
     }
     if (ch === '&') { this.entityBuf = '&'; return; }
 
-    if (ch === '<') { this.autolinkBuf = ''; this.autolinkQuote = null; return; }
+    if (ch === '<') { this.autolinkBuf = ''; this.autolinkQuote = null; this.autolinkDecl = false; return; }
 
     // Bare URL
     if (this.bareUrlOpen) {
@@ -1471,6 +1503,21 @@ class MarkdownStreamer {
     if (/^<\/[a-zA-Z][a-zA-Z0-9-]*\s*>\s*$/.test(p)) return true; // closing tag
     const m = p.match(/^<([a-zA-Z][a-zA-Z0-9-]*[\s\S]*?)>\s*$/);
     return !!m && this._isValidOpenTagBody(m[1]);
+  }
+
+  // Inserts a complete, self-contained literal raw-HTML construct (a
+  // comment, processing instruction, declaration, or CDATA section)
+  // recognized inline mid-paragraph — parsed the same way flushRawHtml()
+  // parses a block-level one, so e.g. "<!-- x -->" really becomes a DOM
+  // Comment node (not a hand-built approximation of one), matching what
+  // a real browser's HTML parser does with that exact text.
+  _insertRawInline(raw) {
+    try {
+      const template = document.createElement('template');
+      template.innerHTML = raw;
+      while (template.content.firstChild) this.dom.current.appendChild(template.content.firstChild);
+    } catch (e) { this.appendToTextNode(raw); }
+    this.textNode = null;
   }
 
   // Classifies and applies a buffered "<...>" span once its closing '>' is
