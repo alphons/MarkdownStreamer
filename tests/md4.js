@@ -254,6 +254,19 @@ class MarkdownStreamer {
       // content instead of becoming its own separate block.
       if (closedListRelativeCode) { this._ascendToLI(); this.textNode = null; }
       this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null; this.indentCodeInBlockquote = false;
+      if (closedListRelativeCode && !this.pendingListBlank && !this.pendingEmptyItem) {
+        // This code block was the item's FIRST block (opened directly on
+        // the marker's own line via liAbsorb, not through the ordinary
+        // blank-line-continuation path that already marks looseness) —
+        // whatever follows it is a SECOND block in the same item, which
+        // makes the list loose the same way any other multi-block item
+        // does, and needs a real <p> wrapper rather than going straight
+        // into the <li> as bare text (matching _resolveListBlankContinuation()'s
+        // identical decision for its own fromBlank case).
+        const top = this.listStack[this.listStack.length - 1];
+        if (top) this._markListLoose(top);
+        if (!/^[`~|>0-9*+-]$/.test(ch)) this.openParagraph();
+      }
       if (this.pendingListBlank) {
         this.pendingListBlank = false;
         this._resolveListBlankContinuation(ch, true);
