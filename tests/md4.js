@@ -111,6 +111,7 @@ class MarkdownStreamer {
     // content on its own line (e.g. "-\n") — the NEXT line decides whether
     // it's this (tight) item's content or something else entirely.
     this._blankBeforeNewItem = false;
+    this._forceNextListLoose = false;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -616,6 +617,19 @@ class MarkdownStreamer {
         this.pendingEmptyItem = false;
         this._flushEmphasis(this.dom.current); this.dom.pop();
         this.textNode = null; this.lastBlockEl = null;
+        // This blank line is a genuine one sitting BETWEEN this (now
+        // finalized, still-empty) item and whatever comes next — if
+        // that turns out to be a new sibling item of the SAME list,
+        // openListItem() must mark the whole list loose the same as any
+        // other blank-line-separated pair of items (CommonMark 5.3;
+        // spec example "* a\n*\n\n* c\n" is loose). A SEPARATE flag from
+        // _blankBeforeNewItem: that one is set and consumed synchronously
+        // within the same character's handling (no resetLine() in
+        // between), but this blank line's own processing ends with a
+        // resetLine() call before the next line (which might start that
+        // new item) even begins — resetLine() deliberately leaves this
+        // one alone so it survives that gap. openListItem() clears it.
+        this._forceNextListLoose = true;
       } else if (li && (tag === 'P' || tag === 'LI')) {
         // A blank line inside a list item doesn't necessarily end the list —
         // it might just separate this item's paragraphs, or separate this
@@ -2941,11 +2955,12 @@ class MarkdownStreamer {
           // This new item follows a blank line and reuses the SAME list
           // (not a fresh one) — that blank line separated two items of this
           // list, which is exactly what makes it loose.
-          if (this._blankBeforeNewItem) this._markListLoose(now);
+          if (this._blankBeforeNewItem || this._forceNextListLoose) this._markListLoose(now);
         }
       }
     }
     this._blankBeforeNewItem = false;
+    this._forceNextListLoose = false;
     const li = this.dom.push('li'); this.lastBlockEl = li;
     this.taskCheckBuf = ''; this.taskCheckDone = false;
   }
