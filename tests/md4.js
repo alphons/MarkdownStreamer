@@ -490,7 +490,7 @@ class MarkdownStreamer {
       if (!this.setextFailed && this.setextBuf.length >= 1) this.resolveSetext(this.setextChar === '=' ? 'h1' : 'h2');
       else this.flushSetextAsFallback();
       this._resetSetext();
-      this.needsJoinSpace = this.dom.currentTag() === 'P';
+      this.needsJoinSpace = ['P', 'LI', 'DD'].includes(this.dom.currentTag());
       this.resetLine(); return;
     }
     if (this.hrWatch) {
@@ -533,7 +533,7 @@ class MarkdownStreamer {
       } else if (p[0] === '*' && /^\* /.test(p)) {
         this.openUlDecided(p.slice(2), '*');
       } else if (p[0] === '-' && /^-{3,}$/.test(p)) {
-        if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) this.resolveSetext('h2');
+        if (this._setextEligible() && this._setextAllowed()) this.resolveSetext('h2');
         else this.makeHr();
       } else if (/^[_ ]+$/.test(p) && (p.match(/_/g)||[]).length >= 3) {
         this.makeHr();
@@ -932,7 +932,7 @@ class MarkdownStreamer {
         if (p.length === 1) return;
         if (p.length === 2) {
           if (p[1] === ' ') return;
-          if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) {
+          if (this._setextEligible() && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, p[1] !== '-') : this._blockDefault(ch);
           }
           // "-" followed by neither a space nor another "-" can never
@@ -948,7 +948,7 @@ class MarkdownStreamer {
           if (p === '- -' || p === '- *') return;
           if (p[1] === ' ' && p[2] !== '-' && p[2] !== ' ') return this.openUlDecided(p[2], '-');
           if (p[1] === ' ' && p[2] === ' ') return;
-          if (this.lastBlockEl?.tagName === 'P' && this._setextAllowed()) {
+          if (this._setextEligible() && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, false) : this._blockDefault(ch);
           }
           return this.startHrWatch('-', p.split('-').length - 1, false);
@@ -992,7 +992,7 @@ class MarkdownStreamer {
         this._blockDefault(ch); return;
 
       case '=':
-        if (this.lastBlockEl?.tagName === 'P' && this.lineIndent < 4 && this._setextAllowed()) { this.startSetextWatch('=', p, ch !== '='); return; }
+        if (this._setextEligible() && this.lineIndent < 4 && this._setextAllowed()) { this.startSetextWatch('=', p, ch !== '='); return; }
         this._blockDefault(ch); return;
 
       case '[': {
@@ -2843,6 +2843,33 @@ class MarkdownStreamer {
     return !this.dom.find('BLOCKQUOTE') || this._inBlockquoteContent;
   }
 
+  // A setext underline can turn the PRECEDING line into a heading even
+  // when that line's "paragraph" isn't a real <p> element at all — a
+  // tight list item's own text (e.g. "- Bar") is kept directly in the
+  // <li>, with no <p> wrapper, so this.lastBlockEl there is the <li>
+  // itself, not a 'P'. DD (a definition's own description line) is the
+  // same shape. Checking the tag alone this way relies on the same
+  // invariant the plain 'P' check already did: this only ever gets
+  // reached once a real content line has actually opened one of these,
+  // never while one is freshly empty.
+  _setextEligible() {
+    const tag = this.lastBlockEl?.tagName;
+    if (tag === 'LI') {
+      // Unlike a blockquote's simple lazy-continuation rule, whether an
+      // unindented-relative-to-the-marker line still belongs to a list
+      // item is decided by comparing its indentation to that item's own
+      // content column — an underline indented at least that far (e.g.
+      // "- Bar\n  ---") is still part of the item's own paragraph text
+      // and CAN turn it into a heading, but one with LESS indentation
+      // (e.g. "- Foo\n---", unindented) has already fallen out of the
+      // item entirely and must end the list, becoming a thematic break
+      // instead — not retroactively turn "Foo" into a heading.
+      const top = this.listStack[this.listStack.length - 1];
+      return !top || this.lineIndent >= top.contentCol;
+    }
+    return tag === 'P' || tag === 'DD';
+  }
+
   _ascendToLI() {
     while (!['LI', 'UL', 'OL'].includes(this.dom.currentTag()) && this.dom.current !== this.dom.bottomStack) {
       this.dom.pop();
@@ -3014,12 +3041,29 @@ class MarkdownStreamer {
   // ── Setext ─────────────────────────────────────────────────────────────────
   resolveSetext(tag) {
     const p = this.lastBlockEl;
-    if (!p || p.tagName !== 'P') return;
-    const h = document.createElement(tag);
-    while (p.firstChild) h.appendChild(p.firstChild);
-    p.parentNode.replaceChild(h, p);
-    this.dom.replaceAt(p, h);
-    this.lastBlockEl = h; this.textNode = null;
+    if (!p) return;
+    if (p.tagName === 'P') {
+      const h = document.createElement(tag);
+      while (p.firstChild) h.appendChild(p.firstChild);
+      p.parentNode.replaceChild(h, p);
+      this.dom.replaceAt(p, h);
+      this.lastBlockEl = h; this.textNode = null;
+      return;
+    }
+    if (p.tagName === 'LI' || p.tagName === 'DD') {
+      // A tight list item's (or definition's) own text has no separate
+      // <p> wrapper to swap out for a heading — it sits directly in the
+      // LI/DD. Move that text into a new heading element APPENDED
+      // inside it instead, rather than replacing the LI/DD itself —
+      // dom.current stays right where it already is (still the LI/DD),
+      // so whatever follows the heading (e.g. more loose trailing text)
+      // becomes the heading's sibling within the same item, not its
+      // child.
+      const h = document.createElement(tag);
+      while (p.firstChild) h.appendChild(p.firstChild);
+      p.appendChild(h);
+      this.lastBlockEl = h; this.textNode = null;
+    }
   }
   _appendOrNewParagraph(text) {
     const tag = this.dom.currentTag();
