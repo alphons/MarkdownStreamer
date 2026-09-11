@@ -812,10 +812,15 @@ test('type 7 cannot interrupt an already-open paragraph', () => {
   assert.match(html, /<kbd>x<\/kbd>/);
 });
 
-test('type 7 ends at the next blank line, leaving later content as normal markdown', () => {
+test('a lone type-6/7 open tag stays open across intervening markdown until its matching close', () => {
+  // Per CommonMark (spec example 167): "<del>" alone (ended by the blank
+  // line right after it, per 4.6/4.7) is not a self-contained, already-
+  // complete block — it stays open, nesting whatever ordinary markdown
+  // blocks follow, until a later raw-HTML block turns out to be its
+  // matching closing tag. A real browser given the FULL resulting string
+  // in one parse nests it the same way (verified against jsdom).
   const html = render('<del>\n\n*foo*\n\n</del>\n');
-  assert.match(html, /<del><\/del>/);
-  assert.match(html, /<em>foo<\/em>/);
+  assert.strictEqual(html, '<del><p><em>foo</em></p></del>');
 });
 
 test('indented code following a blank line inside a list item is recognized (not just a plain paragraph)', () => {

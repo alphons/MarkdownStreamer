@@ -93,6 +93,7 @@ class MarkdownStreamer {
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
     this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
     this._rawHtmlChain = null;
+    this._openRawHtmlEls = new Set();
     this.mathInlineBuf = null; // "$...$" — not CommonMark, a common AI-output extension
     this.inMathBlock = false; this.mathBlockLineBuf = ''; this.mathBlockTextNode = null;
 
@@ -2539,6 +2540,27 @@ class MarkdownStreamer {
 
   flushRawHtml() {
     let raw = this.rawHtmlBuf;
+    // A type-6/7 HTML block that's JUST a closing tag (e.g. "</div>") —
+    // if it matches one of the still-open, no-matching-close-yet elements
+    // tracked below, this is that match: pop it (and anything nested
+    // inside it) instead of trying to parse "</div>" as its own content
+    // (which, alone, parses to nothing — see the childNodes===0 case
+    // below — that's the right behavior for a genuinely unmatched
+    // closing tag, but this one DOES have a match, just not within its
+    // own single block).
+    const closeOnly = raw.trim().match(/^<\/([a-zA-Z][a-zA-Z0-9-]*)\s*>$/);
+    if (closeOnly) {
+      const el = this.dom.find(closeOnly[1].toUpperCase());
+      if (el && this._openRawHtmlEls.has(el)) {
+        this._openRawHtmlEls.delete(el);
+        this._pop(el);
+        this._rawHtmlChain = null;
+        this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
+        this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+        this.resetLine();
+        return;
+      }
+    }
     const parent = this.dom.current;
     // Adjacent raw-HTML blocks (e.g. "<table>\n\n<tr>\n\n<td>...", each
     // line its own type-6 HTML block per CommonMark 4.6, ended by the
@@ -2594,6 +2616,24 @@ class MarkdownStreamer {
           const n = template.content.firstChild;
           parent.appendChild(n);
           insertedNodes.push(n);
+        }
+        // A type-6/7 block (ended by a blank line/EOF, not a required
+        // matching closing tag) that parsed down to exactly ONE element,
+        // which raw's own source text never actually closed itself (its
+        // closing tag was synthesized by the parser purely because the
+        // fragment had to end SOMEWHERE) — e.g. "<div>" alone — stays
+        // open on the DOM stack instead of being treated as complete,
+        // the same way a blockquote or list item spans multiple blocks.
+        // _popToBlockContainer() (see there) won't pop it again until a
+        // LATER raw-HTML block turns out to be its matching close.
+        if (this.rawHtmlEndMode === 'blank' && insertedNodes.length === 1 && insertedNodes[0].nodeType === 1) {
+          const el = insertedNodes[0];
+          const tag = el.tagName.toLowerCase();
+          const explicitlyClosed = new RegExp('</' + tag + '(?=[\\s>])', 'i').test(raw);
+          if (!explicitlyClosed) {
+            this._openRawHtmlEls.add(el);
+            this.dom.current = el;
+          }
         }
       }
     } catch(e) { this.writeText(raw); if (this.textNode) insertedNodes.push(this.textNode); }
@@ -2678,6 +2718,17 @@ class MarkdownStreamer {
       // flag is reset every line), not generally — an UNINDENTED
       // construct genuinely ending the list must still pop out normally.
       if (this._inListContinuation && this.dom.currentTag() === 'LI') return;
+      // A type-6/7 HTML block that was just a lone open tag with no
+      // matching close anywhere in ITS OWN block (e.g. "<div>" alone,
+      // ended by the next blank line, per CommonMark 4.6/4.7) stays open
+      // across whatever ordinary markdown blocks follow — same as a
+      // blockquote or list item — until a LATER raw-HTML block turns out
+      // to be its matching closing tag (see flushRawHtml()). Unlike the
+      // blockquote/list checks above, this isn't gated on any per-line
+      // flag: nothing about a normal markdown line signals "still inside
+      // the div", so it's simply never popped by ordinary block
+      // transitions, only by that explicit matching close.
+      if (this._openRawHtmlEls.has(this.dom.current)) return;
       this.dom.pop();
     }
   }
