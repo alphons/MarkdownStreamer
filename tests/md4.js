@@ -905,6 +905,21 @@ class MarkdownStreamer {
       this.resetLine(); return;
     }
 
+    // An in-progress "<...>" tag/comment/PI/declaration/CDATA scan that got
+    // opened partway through THIS line (most commonly decideBlock()'s
+    // undecided-line paragraph fallback replaying pending text like "<b2"
+    // through inline handling right before this line ending is reached —
+    // an already-open scan carried in FROM a previous line instead takes
+    // processChar()'s own early bypass and never reaches onNewline() at
+    // all) gets the exact same multi-line survival CommonMark 6.9 grants a
+    // comment/PI/declaration/CDATA/tag's attributes: feed the newline as
+    // literal scan content and stop here, before any of this function's
+    // ordinary per-line cleanup — most importantly the hard-break check
+    // just below, which must never fire on trailing spaces/backslash that
+    // are still inside a buffered tag/attribute rather than real paragraph
+    // text (examples #615/#616/#642/#643).
+    if (this.autolinkBuf !== null) { this._feedAutolinkChar('\n'); return; }
+
     // A hard break (trailing "  " or "\") only applies mid-paragraph/list-item
     // /definition — not inside a single-line construct like a heading, where
     // trailing spaces/backslash are just trimmed with no <br>.
@@ -1135,11 +1150,16 @@ class MarkdownStreamer {
         const { level, i } = this._bqLevel(p);
         if (i === p.length) return;
         // Wait while everything after the ">" marker(s) so far is still
-        // just whitespace — could still turn into real content, or the
-        // line could end up entirely blank (">  \n"), which must NOT open
-        // a paragraph at all (handled by onNewline's undecided-line
-        // fallback once blockDecided never became true for this line).
-        if (/^ *$/.test(p.slice(i))) return;
+        // just whitespace (spaces OR tabs — a tab here, e.g. ">\t\tfoo",
+        // is still just more leading whitespace to keep waiting on, not
+        // real content yet; only counting literal spaces here made this
+        // fire prematurely on the FIRST tab, with "foo" not even typed
+        // yet — CommonMark tabs example #6) — could still turn into real
+        // content, or the line could end up entirely blank (">  \n"),
+        // which must NOT open a paragraph at all (handled by onNewline's
+        // undecided-line fallback once blockDecided never became true for
+        // this line).
+        if (/^[ \t]*$/.test(p.slice(i))) return;
         // Lazy continuation (CommonMark 5.1): fewer ">" markers than the
         // depth currently open still belongs to the SAME still-open
         // paragraph, as long as one is actually open right now — the
@@ -1168,13 +1188,34 @@ class MarkdownStreamer {
         // way this whole replay only ever fires once per line (see the
         // comment below): can't interrupt an open P/LI/DD, same as the
         // top-level rule.
-        const leadWs = rest.match(/^ */)[0].length;
-        if (leadWs >= 4 && !/^ *$/.test(rest) && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
+        // A TAB in this leading run expands to the next tab stop measured
+        // from the column right AFTER the ">" marker(s) were consumed —
+        // not from column 0 of the raw line — same column-based math the
+        // top-level indent prologue applies, just anchored to a different
+        // starting column (CommonMark tab example #6/#7). p[i - 1] tells
+        // us whether _bqLevel() already consumed a literal space as the
+        // marker's own optional separator; when it didn't (nothing but
+        // "> " with the very next char being a tab, not a space), that
+        // tab's own first expanded column stands in for the never-typed
+        // separator, and only the REMAINDER of its expansion counts as
+        // leading indentation.
+        let col = i, j = 0, leadSpaces = 0;
+        if (p[i - 1] !== ' ' && rest[0] === '\t') {
+          const stop = (Math.floor(col / 4) + 1) * 4;
+          leadSpaces += stop - col - 1;
+          col = stop; j = 1;
+        }
+        while (j < rest.length && (rest[j] === ' ' || rest[j] === '\t')) {
+          if (rest[j] === ' ') { leadSpaces++; col++; }
+          else { const stop = (Math.floor(col / 4) + 1) * 4; leadSpaces += stop - col; col = stop; }
+          j++;
+        }
+        if (leadSpaces >= 4 && j < rest.length && !['LI', 'P', 'DD'].includes(this.dom.currentTag())) {
           this.closeBlock();
           const pre = this.dom.push('pre');
           const code = document.createElement('code');
           pre.appendChild(code);
-          this.textNode = document.createTextNode(rest.slice(4));
+          this.textNode = document.createTextNode(' '.repeat(leadSpaces - 4) + rest.slice(j));
           code.appendChild(this.textNode);
           this.inIndentCode = true; this.lastBlockEl = pre;
           this.indentCodeInBlockquote = true;
@@ -1182,14 +1223,15 @@ class MarkdownStreamer {
           this.lastChar = rest[rest.length - 1];
           return;
         }
-        // Up to 3 leading spaces of a quoted line's own content are
-        // ordinary ignorable block-start indentation, exactly like at
-        // the top level (CommonMark) — e.g. ">    not code" (3 spaces,
-        // one short of the code trigger above) must read as the plain
-        // paragraph "not code", not literal leading spaces. Only
-        // reached with leadWs < 4 (the >= 4 case already returned above
-        // as code), so stripping all of it is always correct here.
-        const contentAfterIndent = rest.slice(leadWs);
+        // Up to 3 columns of leading indentation on a quoted line's own
+        // content are ordinary ignorable block-start whitespace, exactly
+        // like at the top level (CommonMark) — e.g. ">    not code" (3
+        // spaces, one short of the code trigger above) must read as the
+        // plain paragraph "not code", not literal leading spaces. Only
+        // reached with leadSpaces < 4 (the >= 4 case already returned
+        // above as code), so stripping all counted whitespace chars is
+        // always correct here.
+        const contentAfterIndent = rest.slice(j);
         // Replay the content after the ">" markers through decideBlock
         // itself (not straight to inline text) so a heading, list, fence,
         // etc. inside a blockquote is recognized as one, not forced into a
@@ -1280,7 +1322,15 @@ class MarkdownStreamer {
       case '-':
         if (p.length === 1) return;
         if (p.length === 2) {
-          if (p[1] === ' ') return;
+          // A single TAB right after the marker (e.g. "-\t\tfoo") must
+          // defer exactly like a single space does just below — it could
+          // still be more list-marker indentation, or a wider-than-one-
+          // column gap before a thematic break's next "-" — rather than
+          // immediately falling back to literal text just because it
+          // isn't literally a space character (CommonMark tabs example
+          // #7: this used to give up on "-\t", two characters in, well
+          // before "foo" — or a second marker — ever arrived).
+          if (p[1] === ' ' || p[1] === '\t') return;
           if (this._setextEligible() && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, p[1] !== '-') : this._blockDefault(ch);
           }
@@ -1297,6 +1347,15 @@ class MarkdownStreamer {
           if (p === '- -' || p === '- *') return;
           if (p[1] === ' ' && p[2] !== '-' && p[2] !== ' ') return this.openUlDecided(p[2], '-');
           if (p[1] === ' ' && p[2] === ' ') return;
+          // Tab equivalents of the two space-only checks just above: a
+          // lone leading tab followed immediately by real content commits
+          // to a list item via tab-stop column math (same formula as the
+          // blockquote fix above) instead of plain character-counting;
+          // a tab followed by more whitespace (of either kind) still
+          // needs to keep deferring, same reasoning as "- -" more chars
+          // may follow (another marker, more indentation, ...).
+          if (p[1] === '\t' && p[2] !== '-' && p[2] !== ' ' && p[2] !== '\t') return this._openTabbedListItem('\t', p[2]);
+          if ((p[1] === ' ' || p[1] === '\t') && (p[2] === ' ' || p[2] === '\t')) return;
           if (this._setextEligible() && this._setextAllowed()) {
             return this.lineIndent < 4 ? this.startSetextWatch('-', p, false) : this._blockDefault(ch);
           }
@@ -1316,6 +1375,11 @@ class MarkdownStreamer {
           // single-space gap was the only possibility and committing to a
           // list item right away.
           if (/^-[ \t]*$/.test(p)) return;
+          // Real content just arrived right after a 2-character
+          // whitespace run (p[1], p[2]) that included at least one TAB —
+          // needs tab-stop column math instead of openUlDecided()'s plain
+          // character-counting (CommonMark tabs example #7).
+          if (p[1] === '\t' || p[2] === '\t') return this._openTabbedListItem(p.slice(1, 3), p[3]);
           return this.openUlDecided(p.slice(2), '-');
         }
         // Still nothing but "-" and spaces (in any amount, including a
@@ -3019,6 +3083,57 @@ class MarkdownStreamer {
   }
   startHrWatch(c,n,f,buf)   { this.hrWatch = true; this.hrChar = c; this.hrCount = n; this.hrFailed = f; this.hrBuf = buf; this._bd(); }
   startSetextWatch(c,b,f){ this.setextWatch = true; this.setextChar = c; this.setextBuf = b; this.setextFailed = f; this._bd(); }
+  // Opens a "-" list item whose marker is followed by whitespace containing
+  // at least one TAB before its first real content character (CommonMark
+  // tabs example #7: "-\t\tfoo") — openUlDecided() below assumes every
+  // whitespace character it's handed is exactly one column wide, which a
+  // literal space always is but a tab (which jumps to the next multiple-
+  // of-4 column) is not, so that case is split out here instead of trying
+  // to bolt tab-stop math onto openUlDecided()'s char-counting. Mirrors
+  // the identical column-math fix already applied to blockquote content
+  // (case '>' above): a one-character marker occupies column 0, so real
+  // content (if the whole run collapses to 4 or more extra columns past
+  // the one required separator column) starts at column 2 and anything
+  // from there up to the 4-columns-past-that boundary is literal leading
+  // space of an indented code block, not further indentation to absorb.
+  // `ws` is the whitespace run between the marker and the first content
+  // char, `firstChar` that first content character itself.
+  _openTabbedListItem(ws, firstChar) {
+    const base = 2; // column right after "-" + its 1 required separator column
+    let col = 1, j = 0, leadSpaces = 0;
+    if (ws[0] === '\t') {
+      const stop = (Math.floor(col / 4) + 1) * 4;
+      leadSpaces += stop - col - 1;
+      col = stop; j = 1;
+    } else { col = 2; j = 1; } // a literal space satisfies the required separator outright
+    while (j < ws.length) {
+      if (ws[j] === ' ') { leadSpaces++; col++; }
+      else { const stop = (Math.floor(col / 4) + 1) * 4; leadSpaces += stop - col; col = stop; }
+      j++;
+    }
+    if (leadSpaces >= 4) {
+      this.openListItem('ul', this.lineIndent, '-', undefined, base);
+      const top = this.listStack[this.listStack.length - 1];
+      const pre = this.dom.push('pre');
+      const code = document.createElement('code');
+      pre.appendChild(code);
+      this.textNode = document.createTextNode(' '.repeat(leadSpaces - 4) + firstChar);
+      code.appendChild(this.textNode);
+      this.inIndentCode = true; this.lastBlockEl = pre;
+      this.indentCodeListCol = base;
+      if (top) top.contentCol = base;
+      this._bd();
+      return;
+    }
+    this.openListItem('ul', this.lineIndent, '-', undefined, base + leadSpaces);
+    this._bd();
+    this.pending = ''; this.blockDecided = false;
+    this.lineIndent = base + leadSpaces;
+    this.needsJoinSpace = false;
+    this._inListContinuation = true;
+    this.decideBlock(firstChar);
+  }
+
   openUlDecided(s, marker) {
     const base = this.linePos - s.length; // column right after marker + its 1 required space
     // `s` can be a MIX of already-buffered extra spaces followed by the
@@ -3240,7 +3355,7 @@ class MarkdownStreamer {
     this._bd();
   }
 
-  flushRawHtml() {
+  flushRawHtml(atEOF) {
     let raw = this.rawHtmlBuf;
     // A type-6/7 HTML block that's JUST a closing tag (e.g. "</div>") —
     // if it matches one of the still-open, no-matching-close-yet elements
@@ -3304,7 +3419,24 @@ class MarkdownStreamer {
       // content, not block-level padding to strip. Every other mode
       // trims (its content is a mix of block-level lines where the
       // final line ending is just structural, not meaningful text).
-      template.innerHTML = this.rawHtmlEndMode === 'tag' ? raw : raw.trim();
+      // An unclosed type-1 block reaching true end-of-input (no matching
+      // closing tag ever arrived) drops exactly the input's own final
+      // trailing line ending — same as CommonMark's convention that every
+      // input implicitly ends with a newline that is not itself content —
+      // rather than storing it as literal RAWTEXT.
+      let tagRaw = (atEOF && this.rawHtmlEndMode === 'tag' && raw.endsWith('\n')) ? raw.slice(0, -1) : raw;
+      // HTML5's parser silently drops a single leading newline immediately
+      // after a <pre>/<textarea> start tag (never <script>/<style>) —
+      // real-browser behavior template.innerHTML itself follows. That
+      // newline is genuine literal content here (the blank line right
+      // after the opening tag, CommonMark example #171), so counteract the
+      // parser's own strip by feeding it one extra leading newline to eat
+      // instead.
+      if (this.rawHtmlEndMode === 'tag' && (this.rawHtmlCloseTag === 'pre' || this.rawHtmlCloseTag === 'textarea')
+          && /^<[^>]*>\n/.test(tagRaw)) {
+        tagRaw = tagRaw.replace(/^(<[^>]*>)/, '$1\n');
+      }
+      template.innerHTML = this.rawHtmlEndMode === 'tag' ? tagRaw : raw.trim();
       if (template.content.childNodes.length === 0) {
         // Truly nothing survived parsing at all (not even a leftover text
         // node) — e.g. raw was only a stray closing tag with nothing
@@ -3359,7 +3491,7 @@ class MarkdownStreamer {
             // (now complete) element itself.
             parent.appendChild(document.createTextNode('\n'));
           }
-        } else if (insertedNodes.length > 0 && /\s$/.test(raw)) {
+        } else if (insertedNodes.length > 0 && /\s$/.test(raw) && !(atEOF && this.rawHtmlEndMode === 'tag')) {
           // A block that ends mid-line, at its own terminator, rather
           // than at a blank line (a comment/PI/CDATA reaching "-->" etc,
           // or a type-1 tag reaching its matching closing tag) — e.g.
@@ -3976,7 +4108,7 @@ class MarkdownStreamer {
     // matching close marker) before the very end of the input — a real
     // scenario for a *streaming* renderer with content still being typed —
     // is flushed as-is rather than left stuck mid-block forever.
-    if (this.inRawHtml) this.flushRawHtml();
+    if (this.inRawHtml) this.flushRawHtml(true);
 
     this._trimIndentCode();
     this.flushDefPending();
