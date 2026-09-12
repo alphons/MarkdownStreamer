@@ -610,6 +610,54 @@ class MarkdownStreamer {
   }
 
   // ── Newline ────────────────────────────────────────────────────────────────
+  // Resolves whatever link/image attempt is still dangling (this.linkState
+  // !== null) at a point where no more characters are coming for it right
+  // now — an ordinary line ending mid-paragraph (called from onNewline()
+  // below), or the end of a raw-text replay fed through the normal inline
+  // pipeline in an isolated scratch container (see _replayRawInline()) —
+  // both need the exact same "what happens if this attempt just stops
+  // here" resolution.
+  _flushDanglingLinkState() {
+    if (this.linkState === 'expect_paren') {
+      const a = this.dom.find('A');
+      if (a && !a.href) { a.dataset.implicitRef = this._normalizeRefKey(this.linkBuf); this._pop(a); }
+      this._resetLinkUrl();
+    } else if (this.linkState === 'img_expect_paren' || this.linkState === 'img_ref_id') {
+      // A shortcut ![alt] or collapsed/explicit ![alt][ref] ending exactly
+      // at end-of-line never reaches onLinkChar's own handling for it
+      // (newlines bypass onLinkChar entirely) — resolve it here the same way.
+      const isShortcut = this.linkState === 'img_expect_paren';
+      const refKey = this._normalizeRefKey(isShortcut ? this.linkBuf : (this.urlBuf.trim() || this.linkBuf));
+      this._pushRefImage(refKey, isShortcut);
+      this._resetLinkUrl();
+    } else if (this.linkState === 'url') {
+      // A link destination/title never reaching its closing ")" before the
+      // line ends — CommonMark's inline-link destination cannot itself
+      // contain a raw line ending (a title spanning lines is a separate,
+      // not-yet-supported case) — the whole "[label](..." attempt, as
+      // typed so far, falls back to literal text, same shape as an
+      // in-line failure (_feedUrlChar returning {failed:true}).
+      const a = this.dom.find('A');
+      if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
+      this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
+    } else if (this.linkState === 'img_url') {
+      this.appendToTextNode('![');
+      for (const c of this.linkBuf) { this.onInlineChar(c); this.lastChar = c; }
+      this.appendToTextNode('](' + this._unescapeRaw(this.urlRawBuf));
+      this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false; this.linkState = null;
+      this._resetUrlParse();
+    } else if (this.linkState !== null) {
+      // Most commonly 'label_open' reaching end-of-input/line with no
+      // closing "]" ever found — the "[" that opened it was never
+      // written as a literal character (it commits straight to a real
+      // <a> for the live-streaming case), so it must be restored before
+      // unwrapping, same as every other link-abort path already does.
+      const a = this.dom.find('A');
+      if (a) a.insertBefore(document.createTextNode('['), a.firstChild);
+      this.abortLinkElement(null);
+    }
+  }
+
   onNewline() {
     // Captured before resetting: reflects whether the PREVIOUS line left an
     // open paragraph/list-item/definition wanting a soft-break join space —
@@ -1283,44 +1331,7 @@ class MarkdownStreamer {
       this._codeSpanJoinSpacePending = true;
       this.resetLine(); return;
     }
-    if (this.linkState === 'expect_paren') {
-      const a = this.dom.find('A');
-      if (a && !a.href) { a.dataset.implicitRef = this._normalizeRefKey(this.linkBuf); this._pop(a); }
-      this._resetLinkUrl();
-    } else if (this.linkState === 'img_expect_paren' || this.linkState === 'img_ref_id') {
-      // A shortcut ![alt] or collapsed/explicit ![alt][ref] ending exactly
-      // at end-of-line never reaches onLinkChar's own handling for it
-      // (newlines bypass onLinkChar entirely) — resolve it here the same way.
-      const isShortcut = this.linkState === 'img_expect_paren';
-      const refKey = this._normalizeRefKey(isShortcut ? this.linkBuf : (this.urlBuf.trim() || this.linkBuf));
-      this._pushRefImage(refKey, isShortcut);
-      this._resetLinkUrl();
-    } else if (this.linkState === 'url') {
-      // A link destination/title never reaching its closing ")" before the
-      // line ends — CommonMark's inline-link destination cannot itself
-      // contain a raw line ending (a title spanning lines is a separate,
-      // not-yet-supported case) — the whole "[label](..." attempt, as
-      // typed so far, falls back to literal text, same shape as an
-      // in-line failure (_feedUrlChar returning {failed:true}).
-      const a = this.dom.find('A');
-      if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
-      this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
-    } else if (this.linkState === 'img_url') {
-      this.appendToTextNode('![');
-      for (const c of this.linkBuf) { this.onInlineChar(c); this.lastChar = c; }
-      this.appendToTextNode('](' + this._unescapeRaw(this.urlRawBuf));
-      this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false; this.linkState = null;
-      this._resetUrlParse();
-    } else if (this.linkState !== null) {
-      // Most commonly 'label_open' reaching end-of-input/line with no
-      // closing "]" ever found — the "[" that opened it was never
-      // written as a literal character (it commits straight to a real
-      // <a> for the live-streaming case), so it must be restored before
-      // unwrapping, same as every other link-abort path already does.
-      const a = this.dom.find('A');
-      if (a) a.insertBefore(document.createTextNode('['), a.firstChild);
-      this.abortLinkElement(null);
-    }
+    this._flushDanglingLinkState();
 
     if (this.atxLevel && this.textNode)
       this.textNode.data = this.textNode.data.replace(/^#+\s*$/, '').replace(/\s+#+\s*$/, '').replace(/\s+#+$/, '').replace(/ +$/, '').replace(/\x00/g, '#');
@@ -2752,7 +2763,25 @@ class MarkdownStreamer {
           const def = this.refDefs[refKey];
           if (a) {
             if (def) { a.href = def.url; if (def.title) a.title = def.title; }
-            else { a.href = '#'; a.dataset.refKey = refKey; }
+            else {
+              a.href = '#'; a.dataset.refKey = refKey;
+              // Full reference form ("[label][ref]", as opposed to
+              // collapsed "[label][]" where urlBuf is empty): if `ref`
+              // never resolves, CommonMark does NOT fall back to trying
+              // `label` as a shortcut reference — the whole "[label][ref]"
+              // reverts to literal "[label]" text, but "[ref]" itself was
+              // never consumed by this failed attempt (CommonMark's real
+              // algorithm only PEEKS at it to read a label for the lookup,
+              // it doesn't remove it from the stream) — it gets its own,
+              // entirely independent bracket-matching attempt. Remember
+              // the raw (un-normalized, un-rendered) source here so
+              // finalize()'s failure path can replay "[" + raw + "]"
+              // through the normal inline pipeline instead of just
+              // dumping it back as inert literal text (see example #569:
+              // "[foo][bar][baz]" with only "baz" defined resolves as
+              // literal "[foo]" + a real link for "[bar][baz]").
+              if (this.urlBuf.trim() !== '') a.dataset.refRaw = this.urlBuf;
+            }
             this._pop(a);
           }
           this._resetLinkUrl();
@@ -2763,6 +2792,25 @@ class MarkdownStreamer {
         const result = this._feedUrlChar(ch);
         if (result !== null) {
           const a = this.dom.find('A');
+          // A malformed inline destination/title doesn't necessarily doom
+          // the label — CommonMark still gives it a shortcut-reference
+          // chance before falling back fully to literal text (example
+          // #568: "[foo](not a link)" with "[foo]: /url1" defined resolves
+          // as a real link, with "(not a link)" surviving as ordinary
+          // trailing text). Deferred to finalize() (data-implicit-ref, the
+          // same mechanism a top-level "[foo]" shortcut already uses)
+          // since whether the label matches a definition can depend on one
+          // declared LATER in the document — only for a genuinely
+          // top-level attempt, though: a NESTED one can't defer this
+          // decision (see _finalizeShortcutRef()'s own comment), so it
+          // keeps the old immediate revert-to-literal behavior.
+          if (result.failed && a && !a.querySelector('a') && !this._findEnclosingA(a)) {
+            a.dataset.implicitRef = this._normalizeRefKey(this.linkBuf);
+            a.dataset.failTrail = '(' + this.urlRawBuf;
+            this._pop(a);
+            this._resetLinkUrl();
+            return;
+          }
           // CommonMark: a link cannot CONTAIN a link — a nested "[...]"
           // inside this label may have already resolved into a real,
           // live-nested <a> (see case '[' above), in which case this
@@ -2862,6 +2910,211 @@ class MarkdownStreamer {
     this.lastChar = saved.lastChar; this.prevCharWs = saved.prevCharWs; this.pendingDelimBefore = saved.pendingDelimBefore;
     this.linkState = saved.linkState; this.linkBuf = saved.linkBuf; this.urlBuf = saved.urlBuf; this.linkIsImage = saved.linkIsImage;
     return text;
+  }
+
+  // Re-parses raw markdown SOURCE text through the normal inline pipeline
+  // in an isolated, detached container — unlike _renderInlineToPlainText()
+  // this keeps full DOM structure (emphasis, links, code spans, ...), it
+  // just doesn't happen to live in the real document tree yet. Used by
+  // finalize()'s deferred-reference failure paths to give a bracket that
+  // was only ever PEEKED AT (never consumed) during an earlier, failed
+  // "]"-driven lookahead a fresh, independent parse of its own — e.g.
+  // example #569 "[foo][bar][baz]" (only "baz" defined): "[foo]"'s own
+  // closing "]" peeks at "[bar]" as a candidate reference label, the
+  // lookup fails, and "[foo]" reverts to literal text — but "[bar]" was
+  // never actually consumed by that failed attempt, so it must still get
+  // its own turn, here re-scanned as "[bar][baz]" and resolved as a real
+  // link. Caller reads the result off the returned element's childNodes
+  // and splices them into the real tree.
+  _replayRawInline(raw) {
+    const scratch = document.createElement('span');
+    const saved = {
+      current: this.dom.current, textNode: this.textNode, inlinePending: this.inlinePending,
+      lastChar: this.lastChar, prevCharWs: this.prevCharWs, pendingDelimBefore: this.pendingDelimBefore,
+      linkState: this.linkState, linkBuf: this.linkBuf, urlBuf: this.urlBuf, linkIsImage: this.linkIsImage,
+      escapeNext: this.escapeNext, autolinkBuf: this.autolinkBuf,
+    };
+    this.dom.current = scratch; this.textNode = null; this.inlinePending = '';
+    this.lastChar = undefined; this.prevCharWs = true; this.linkState = null;
+    this.escapeNext = false; this.autolinkBuf = null;
+    for (const ch of raw) { this.onInlineChar(ch); this.lastChar = ch; }
+    // Whatever the raw text ends WITH (e.g. a bracket that never got a
+    // following "(...)"/"[...]" to complete it, since replayed text is
+    // always a single isolated span with nothing after it) never reaches
+    // onLinkChar's own handling for that — same "stops here" resolution
+    // an ordinary line ending needs, see _flushDanglingLinkState().
+    this._flushDanglingLinkState();
+    this.flushInlinePending();
+    this._flushCodeSpans(scratch);
+    this._flushEmphasis(scratch);
+    this.dom.current = saved.current; this.textNode = saved.textNode; this.inlinePending = saved.inlinePending;
+    this.lastChar = saved.lastChar; this.prevCharWs = saved.prevCharWs; this.pendingDelimBefore = saved.pendingDelimBefore;
+    this.linkState = saved.linkState; this.linkBuf = saved.linkBuf; this.urlBuf = saved.urlBuf; this.linkIsImage = saved.linkIsImage;
+    this.escapeNext = saved.escapeNext; this.autolinkBuf = saved.autolinkBuf;
+    return scratch;
+  }
+
+  // Unwraps `el` in place — its children move up to become its parent's
+  // own children, flanked by literal `beforeText`/`afterText` text nodes —
+  // used at finalize() time when a deferred link/reference attempt fails
+  // and must revert to literal "[...]" text WITHOUT flattening whatever
+  // markup its content already rendered into (e.g. a nested <em>), the
+  // same way abortLinkElement() already does for the live-streaming case.
+  // Returns the afterText node (a fixed insertion point right after `el`'s
+  // former content) so a caller can splice in further sibling content —
+  // e.g. a fresh reference-label parse — in the correct place.
+  _unwrapBracket(el, beforeText, afterText) {
+    const parent = el.parentNode;
+    if (!parent) return null;
+    if (beforeText) parent.insertBefore(document.createTextNode(beforeText), el);
+    const afterNode = document.createTextNode(afterText || '');
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    parent.insertBefore(afterNode, el);
+    parent.removeChild(el);
+    return afterNode;
+  }
+
+  // Reverts a failed EXPLICIT full-reference link ("[label][ref]" whose
+  // "ref" never matched any definition) to literal "[label]" text, then —
+  // if a raw candidate-label source was recorded (see the 'ref_id' "]"
+  // handler) — re-parses "[" + that raw text + "]" as fresh, independent
+  // markdown and splices the result in right after, exactly where it
+  // appeared in the original source (see _replayRawInline() above).
+  _revertFailedRefLink(a) {
+    const raw = a.dataset.refRaw;
+    const afterNode = this._unwrapBracket(a, '[', ']');
+    if (raw === undefined || !afterNode) return;
+    let replayText = '[' + raw + ']';
+    // The peeked-at label bracket may ALSO already have been independently
+    // turned into its own (still-deferred) DOM node earlier in the stream
+    // — e.g. example #569 "[foo][bar][baz]" (only "baz" defined): "[foo]"
+    // peeks "[bar]" as a candidate label, but "[bar]" itself was already
+    // separately scanned and resolved into its own deferred attempt. Since
+    // that source span is EXACTLY what this fresh replay needs to
+    // re-consume too (the real algorithm's single scan pointer would just
+    // continue reading straight through it), pull its raw source back out
+    // and fold it into the SAME replay instead of leaving it to resolve on
+    // its own as an unrelated sibling — only one such bracket ever needs
+    // absorbing (CommonMark's lookahead here is a single label, not a
+    // chain), so nothing recurses past this one adjacent sibling.
+    const next = afterNode.nextSibling;
+    if (next && next.nodeType === 1 && next.tagName === 'A') {
+      if (next.dataset.implicitRef !== undefined) {
+        replayText += '[' + next.textContent + ']';
+        next.parentNode.removeChild(next);
+      } else if (next.getAttribute('href') === '#' && next.dataset.refKey !== undefined) {
+        replayText += '[' + next.textContent + '][' + this._unescapeRaw(next.dataset.refKey) + ']';
+        next.parentNode.removeChild(next);
+      }
+    }
+    this._spliceReplayAfter(afterNode, replayText);
+  }
+
+  // Reverts a failed label to literal "[label]" text, then replays
+  // `trailRaw` (raw source exactly as typed, e.g. a malformed inline
+  // "(...)" attempt) through the normal inline pipeline right after it —
+  // shared by the malformed-inline-destination shortcut-fallback path (see
+  // the 'url' case) once ITS OWN deferred shortcut-reference attempt also
+  // fails.
+  _revertToLiteralWithTrail(a, trailRaw) {
+    const afterNode = this._unwrapBracket(a, '[', ']');
+    if (trailRaw === undefined || !afterNode) return;
+    this._spliceReplayAfter(afterNode, trailRaw);
+  }
+
+  // Re-parses `raw` (see _replayRawInline() above) and splices the result
+  // in as `node`'s new following siblings, right where `raw` appeared in
+  // the original source.
+  _spliceReplayAfter(node, raw) {
+    const parent = node.parentNode;
+    if (!parent) return;
+    const scratch = this._replayRawInline(raw);
+    const refPoint = node.nextSibling;
+    while (scratch.firstChild) parent.insertBefore(scratch.firstChild, refPoint);
+  }
+
+  // Runs the three deferred-reference resolution passes (explicit
+  // "[label][ref]"/"[label][]", implicit shortcut "[label]", and
+  // reference images) against `container`, repeating to a fixpoint since
+  // a failure can itself splice in NEW deferred markers that need their
+  // own turn (see _revertFailedRefLink() above) — e.g. "[foo][bar][baz]"
+  // needs "[foo]"'s own failure to expose "[bar][baz]" as a fresh attempt
+  // before THAT can be resolved against refDefs in turn.
+  _resolveDeferredIn(container) {
+    let changed = true, guard = 0;
+    while (changed && guard++ < 10000) {
+      changed = false;
+      container.querySelectorAll('a[href="#"]').forEach(a => {
+        const key = a.dataset.refKey || this._normalizeRefKey(a.textContent);
+        const def = this.refDefs[key];
+        if (def) {
+          a.href = def.url; if (def.title) a.title = def.title;
+          delete a.dataset.refKey; delete a.dataset.refRaw;
+          changed = true;
+        } else if (a.dataset.refKey) {
+          // An explicit "[label][ref]" whose ref never matched any
+          // definition — CommonMark: the WHOLE thing (both bracket pairs)
+          // falls back to literal text, same as the analogous img[data-
+          // ref-key] case just below already does. Left as a real,
+          // unresolved href="#" anchor otherwise, forever.
+          if (a.dataset.refRaw !== undefined) this._revertFailedRefLink(a);
+          else {
+            const parent = a.parentNode;
+            if (parent) {
+              // The ref key itself must stay exactly as typed for the
+              // lookup above (CommonMark doesn't unescape for matching
+              // purposes — see the comment on the analogous nested-bracket
+              // check earlier), but once it's just literal fallback text,
+              // ordinary backslash-escape processing applies to it same as
+              // any other text.
+              const literal = '[' + a.textContent + '][' + this._unescapeRaw(a.dataset.refKey) + ']';
+              parent.replaceChild(document.createTextNode(literal), a);
+            }
+          }
+          changed = true;
+        }
+      });
+
+      container.querySelectorAll('a[data-implicit-ref]').forEach(a => {
+        const key = a.dataset.implicitRef;
+        const def = this.refDefs[key];
+        const trail = a.dataset.failTrail; // see the 'url' case's own comment
+        if (def) {
+          a.href = def.url; if (def.title) a.title = def.title;
+          a.removeAttribute('data-implicit-ref'); a.removeAttribute('data-fail-trail');
+          // A malformed inline "(...)" that fell back to a shortcut
+          // reference which DID resolve (example #568) — the "(...)" was
+          // never part of the link to begin with, just ordinary content
+          // that happened to follow it, so it's replayed as a ordinary
+          // sibling either way, success or failure.
+          if (trail !== undefined) this._spliceReplayAfter(a, trail);
+        } else if (trail !== undefined) {
+          // The shortcut fallback ALSO failed — revert the rest of the
+          // way: literal "[label]" text, followed by the "(...)" attempt
+          // replayed exactly as typed (same treatment the immediate-
+          // failure path already gives it).
+          this._revertToLiteralWithTrail(a, trail);
+        } else {
+          this._unwrapBracket(a, '[', ']');
+        }
+        changed = true;
+      });
+
+      container.querySelectorAll('img[data-ref-key]').forEach(img => {
+        const key = img.dataset.refKey;
+        const def = this.refDefs[key];
+        if (def) {
+          img.src = def.url; if (def.title) img.title = def.title;
+          img.removeAttribute('data-ref-key'); img.removeAttribute('data-ref-shortcut'); img.removeAttribute('data-alt-raw');
+        } else {
+          const raw = img.dataset.altRaw ?? img.alt;
+          const literal = img.dataset.refShortcut ? `![${raw}]` : `![${raw}][${key}]`;
+          const parent = img.parentNode;
+          if (parent) parent.replaceChild(document.createTextNode(literal), img);
+        }
+        changed = true;
+      });
+    }
   }
 
   // Walks UP from el's parent (not el itself) looking for an enclosing
@@ -4708,44 +4961,18 @@ class MarkdownStreamer {
     }
     hardBreaks.forEach(br => br.removeAttribute('data-hardbreak'));
 
-    this.root.querySelectorAll('a[href="#"]').forEach(a => {
-      const key = a.dataset.refKey || this._normalizeRefKey(a.textContent);
-      const def = this.refDefs[key];
-      if (def) { a.href = def.url; if (def.title) a.title = def.title; delete a.dataset.refKey; }
-      else if (a.dataset.refKey) {
-        // An explicit "[label][ref]" whose ref never matched any
-        // definition — CommonMark: the WHOLE thing (both bracket pairs)
-        // falls back to literal text, same as the analogous img[data-
-        // ref-key] case just below already does. Left as a real,
-        // unresolved href="#" anchor otherwise, forever.
-        const parent = a.parentNode;
-        if (parent) {
-          // The ref key itself must stay exactly as typed for the
-          // lookup above (CommonMark doesn't unescape for matching
-          // purposes — see the comment on the analogous nested-bracket
-          // check earlier), but once it's just literal fallback text,
-          // ordinary backslash-escape processing applies to it same as
-          // any other text.
-          const literal = '[' + a.textContent + '][' + this._unescapeRaw(a.dataset.refKey) + ']';
-          parent.replaceChild(document.createTextNode(literal), a);
-        }
-      }
-    });
-
-    this.root.querySelectorAll('a[data-implicit-ref]').forEach(a => {
-      const key = a.dataset.implicitRef;
-      const def = this.refDefs[key];
-      if (def) {
-        a.href = def.url; if (def.title) a.title = def.title;
-        a.removeAttribute('data-implicit-ref');
-      } else {
-        const parent = a.parentNode;
-        if (parent) {
-          parent.insertBefore(document.createTextNode('[' + a.textContent + ']'), a);
-          parent.removeChild(a);
-        }
-      }
-    });
+    // Resolves every deferred reference-style link/image against refDefs
+    // (now fully known — reference definitions can appear anywhere in the
+    // document, even after their first use, so none of this could be
+    // decided any earlier). Repeats to a fixpoint: a failed EXPLICIT
+    // "[label][ref]" doesn't just revert to literal text, it also
+    // re-parses "[ref]" as fresh, independent markdown (see
+    // _revertFailedRefLink()) — which can itself contain another deferred
+    // reference needing its own resolution pass, e.g. example #569
+    // "[foo][bar][baz]" (only "baz" defined): "[foo]"'s failure exposes
+    // "[bar][baz]" as a brand new attempt, which THEN resolves as a real
+    // link via "baz"'s definition.
+    this._resolveDeferredIn(this.root);
 
     // A link attempt whose label never actually reached its own closing "]"
     // as literal text — the "]" (and everything after, up through the would-
@@ -4770,20 +4997,6 @@ class MarkdownStreamer {
       parent.insertBefore(document.createTextNode('['), a);
       while (a.firstChild) parent.insertBefore(a.firstChild, a);
       parent.removeChild(a);
-    });
-
-    this.root.querySelectorAll('img[data-ref-key]').forEach(img => {
-      const key = img.dataset.refKey;
-      const def = this.refDefs[key];
-      if (def) {
-        img.src = def.url; if (def.title) img.title = def.title;
-        img.removeAttribute('data-ref-key'); img.removeAttribute('data-ref-shortcut'); img.removeAttribute('data-alt-raw');
-      } else {
-        const raw = img.dataset.altRaw ?? img.alt;
-        const literal = img.dataset.refShortcut ? `![${raw}]` : `![${raw}][${key}]`;
-        const parent = img.parentNode;
-        if (parent) parent.replaceChild(document.createTextNode(literal), img);
-      }
     });
 
     if (Object.keys(this.abbrMap).length > 0) this.applyAbbrs(this.root);
