@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-4.0.1-blue)
 ![Regression tests](https://img.shields.io/badge/regression%20tests-189%2F189-brightgreen)
-![CommonMark conformance](https://img.shields.io/badge/CommonMark-626%2F652%20(96%25)-yellow)
+![CommonMark conformance](https://img.shields.io/badge/CommonMark-634%2F652%20(97%25)-yellow)
 
 A lightweight, streaming Markdown parser that renders directly into the DOM — character by character, in real time. No dependencies, no build step.
 

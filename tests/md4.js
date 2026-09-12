@@ -78,6 +78,7 @@ class MarkdownStreamer {
     this.lastChar = undefined; this.pendingDelimBefore = undefined;
     this.escapeNext = false; this.entityBuf = null;
     this.autolinkBuf = null; this.autolinkQuote = null;
+    this._autolinkNLPending = false; this.autolinkSetextWatch = null;
     this.bareUrlBuf = null; this.bareUrlOpen = false; this.prevCharWs = true;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.refDefs = {};
@@ -114,6 +115,33 @@ class MarkdownStreamer {
     // it's this (tight) item's content or something else entirely.
     this._blankBeforeNewItem = false;
     this._forceNextListLoose = false;
+    // The absolute column (this.linePos-based, like an ordinary list's own
+    // contentCol) right where a blockquote's content begins on THIS line,
+    // right after its ">" marker(s) — set by decideBlock()'s "case '>'"
+    // handler while it's replaying that content, so a list item opened
+    // during the replay (pushNewList()) can record its own contentCol as
+    // relative to the blockquote instead of the current line's raw prefix
+    // width (see _effContentCol()); a later, differently-indented quoted
+    // line can then still be compared correctly. Reset every line.
+    this._bqReplayBaseCol = null;
+    // Set right before a list-item-opening restart (liAbsorb resolving,
+    // openUlDecided()'s non-space branch, _openTabbedListItem(), or
+    // _resolveListBlankContinuation()'s own replay) feeds that item's own
+    // first content through a FRESH decideBlock() call — one that starts
+    // this.pending over from '' with no memory of any blockquote(s) the
+    // list itself is already sitting inside. If that fresh content turns
+    // out to itself be a NEW blockquote marker (decideBlock()'s "case
+    // '>'"), the level _bqLevel() computes from that isolated string is
+    // relative to THIS restart alone, not the document root — case '>'
+    // adds the ambient depth already open at that point (found the same
+    // way it already computes curDepth) before calling ensureBlockquote(),
+    // rather than mistaking an unrelated OUTER blockquote for this new
+    // one already being open (CommonMark example #292/#293's "> 1. >
+    // Blockquote\n..." dropped the inner blockquote entirely this way).
+    // Cleared by resetLine() and (once actually consulted) by case '>'
+    // itself, so it can only ever affect the very next blockquote marker
+    // resolved right after one of these restarts.
+    this._bqFreshRestart = false;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -156,7 +184,78 @@ class MarkdownStreamer {
     // its own fresh block decision, etc. — none of which applies here,
     // matching the identical early bypass already used for an open code
     // span or an in-progress raw-HTML BLOCK, just below).
-    if (this.autolinkBuf !== null) { this._feedAutolinkChar(ch); return; }
+    //
+    // BUT block structure — including whether the line right after this
+    // scan's own line ending is a setext-heading underline — is decided
+    // by CommonMark per LINE, before any inline content (including this
+    // very scan) is even considered (example #91: "<a title=\"a lot\n---\n"
+    // must NOT let the tag scan swallow the "---" as more quoted-attribute
+    // text; that line has to be free to close the paragraph as a heading
+    // instead, same as it would with no open tag scan at all). So a "\n"
+    // arriving here doesn't commit into the scan right away — the very
+    // next character decides: if it's a "-"/"=" that could start a setext
+    // underline for the paragraph/line this scan's "<...>" opened in,
+    // speculatively watch the rest of that line (autolinkSetextWatch,
+    // mirroring codeSpanSetextWatch's identical buffer-then-decide
+    // pattern for an open code span) instead of feeding it into the scan;
+    // only once the line ends do we know whether it really was one.
+    if (this.autolinkBuf !== null) {
+      if (this.autolinkSetextWatch) {
+        const w = this.autolinkSetextWatch;
+        if (ch === '\n') {
+          this.autolinkSetextWatch = null;
+          if (!w.failed && this._setextEligible() && this._setextAllowed()) {
+            // A genuine underline: abort the tag scan back to literal
+            // text (flushing exactly what had accumulated before the
+            // line ending that started this watch — the watched line's
+            // own text is the underline itself, never part of the
+            // paragraph) and let it become the heading, exactly like an
+            // ordinary setext resolution.
+            this._flushAutolinkAsLiteral();
+            this.resolveSetext(w.char === '=' ? 'h1' : 'h2');
+            this.needsJoinSpace = ['P', 'LI', 'DD'].includes(this.dom.currentTag());
+            this.resetLine();
+            return;
+          }
+          // Not a clean underline after all — the deferred line ending
+          // and the whole watched line were always just more scan
+          // content; replay them (plus this new line ending) through the
+          // scan in their original order, same as if they'd never been
+          // diverted into the watch buffer to begin with.
+          this._feedAutolinkReplay('\n' + w.buf + '\n');
+          return;
+        }
+        if (!w.failed && ch === w.char) w.buf += ch;
+        else if (ch === ' ' || ch === '\t') { w.trailing = true; w.buf += ch; }
+        else { w.failed = true; w.buf += ch; }
+        return;
+      }
+      if (this._autolinkNLPending) {
+        this._autolinkNLPending = false;
+        if (ch === '\n') {
+          // A blank line can never be a setext underline — feed the
+          // deferred line ending now (this line contributed nothing else)
+          // and keep deferring this new one the same way.
+          this._feedAutolinkChar('\n');
+          this._autolinkNLPending = true;
+          return;
+        }
+        // Only a plain tag's own (possibly multi-line) attributes are
+        // watched — a comment/PI/CDATA/declaration's content is already
+        // fully literal with no block-structure interaction of its own.
+        const plainTag = this.autolinkBuf[0] !== '!' && this.autolinkBuf[0] !== '?' && !this.autolinkDecl;
+        if (plainTag && (ch === '-' || ch === '=') && this._setextEligible() && this._setextAllowed()) {
+          this.autolinkSetextWatch = { char: ch, buf: ch, failed: false, trailing: false };
+          return;
+        }
+        this._feedAutolinkChar('\n');
+        this._feedAutolinkChar(ch);
+        return;
+      }
+      if (ch === '\n') { this._autolinkNLPending = true; return; }
+      this._feedAutolinkChar(ch);
+      return;
+    }
     if (ch === '\n') { this.onNewline(); return; }
     // A fence opened while replaying a blockquote's content can only
     // ever be continued by a line that itself starts with ">" — see
@@ -364,15 +463,34 @@ class MarkdownStreamer {
         if (top) this._markListLoose(top);
         if (!/^[`~|>0-9*+-]$/.test(ch)) this.openParagraph();
       }
-      if (this.pendingListBlank) {
-        this.pendingListBlank = false;
-        this._resolveListBlankContinuation(ch, true);
-        return;
-      }
-      if (this.pendingEmptyItem) {
-        this.pendingEmptyItem = false;
-        this._resolveListBlankContinuation(ch, false);
-        return;
+      // A line beginning (or, mid-marker, already partway through) a
+      // blockquote marker sequence defers this resolution instead of
+      // doing it here — this.lineIndent only ever reflects raw leading
+      // whitespace BEFORE any ">" marker(s), not the indentation of the
+      // line's actual (post-marker) content, so comparing it against a
+      // list item's contentCol here would be comparing the wrong thing
+      // whenever that item lives inside an already-open blockquote (e.g.
+      // CommonMark example #259: "   > > 1.  one\n>>\n>>     two\n" — the
+      // second ">>" line has NO leading whitespace of its own at all,
+      // despite genuinely continuing the item). decideBlock()'s own "case
+      // '>'" handler picks this back up once it's actually computed that
+      // real indentation (see its matching comment), once the marker
+      // sequence is fully known one way or the other — which requires
+      // deferring even a CONTINUING marker character (not just the
+      // first), hence checking `this.pending`, not just `ch`, for an
+      // already-in-progress one.
+      const bqPending = (ch === '>' || this.pending.includes('>')) && /^[ \t>]*$/.test(this.pending);
+      if (!(bqPending && this.dom.find('BLOCKQUOTE'))) {
+        if (this.pendingListBlank) {
+          this.pendingListBlank = false;
+          this._resolveListBlankContinuation(ch, true);
+          return;
+        }
+        if (this.pendingEmptyItem) {
+          this.pendingEmptyItem = false;
+          this._resolveListBlankContinuation(ch, false);
+          return;
+        }
       }
       // A list marker character (unlike most other block-starting
       // constructs) commits to opening a new item IMMEDIATELY, mid-line,
@@ -445,6 +563,7 @@ class MarkdownStreamer {
       this.lineIndent = a.top.contentCol; // see openUlDecided()'s matching comment
       this.needsJoinSpace = false; // same reasoning: nothing to join yet
       this._inListContinuation = true; // see openUlDecided()'s matching comment
+      this._bqFreshRestart = true; // see its own comment
       this.decideBlock(ch);
       return;
     }
@@ -918,7 +1037,16 @@ class MarkdownStreamer {
     // just below, which must never fire on trailing spaces/backslash that
     // are still inside a buffered tag/attribute rather than real paragraph
     // text (examples #615/#616/#642/#643).
-    if (this.autolinkBuf !== null) { this._feedAutolinkChar('\n'); return; }
+    //
+    // Not fed in right away, though: this exact newline is the same kind
+    // processChar()'s own bypass defers via _autolinkNLPending for every
+    // LATER line of an already-open scan (see there) — whether it's truly
+    // just more scan content, or instead the start of a setext-heading
+    // underline that has to win over the scan (example #91), can only be
+    // told once the next character arrives, and this is the one place a
+    // freshly-opened scan's very FIRST line ending reaches that same
+    // decision point for the first time.
+    if (this.autolinkBuf !== null) { this._autolinkNLPending = true; return; }
 
     // A hard break (trailing "  " or "\") only applies mid-paragraph/list-item
     // /definition — not inside a single-line construct like a heading, where
@@ -1052,6 +1180,7 @@ class MarkdownStreamer {
     this.lastChar = undefined;
     this._codeSpanLineHadChar = false;
     this.escapeNext = false; this.entityBuf = null; this.autolinkBuf = null; this.autolinkQuote = null;
+    this._autolinkNLPending = false; this.autolinkSetextWatch = null;
     this.taskCheckBuf = null; this.taskCheckDone = false;
     this.codeCloseRun = 0;
     this._inBlockquoteContent = false;
@@ -1060,6 +1189,8 @@ class MarkdownStreamer {
     this.liAbsorb = null;
     this._fenceBqLineStarted = false; this._fenceBqAteMarker = false;
     this.atxSkipLeadingSpace = false;
+    this._bqReplayBaseCol = null;
+    this._bqFreshRestart = false;
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
@@ -1173,10 +1304,36 @@ class MarkdownStreamer {
         let curDepth = 0, _e = this.dom.current;
         while (_e) { if (_e.tagName === 'BLOCKQUOTE') curDepth++; if (_e === this.dom.bottomStack) break; _e = _e.parentNode; }
         const lazy = level < curDepth && this.dom.currentTag() === 'P';
-        if (!lazy) this.ensureBlockquote(level);
+        // A fresh list-item-opening restart (see this._bqFreshRestart's own
+        // comment) computed `level` in total isolation, with no idea
+        // curDepth's blockquote(s) — an OUTER container the list itself
+        // already sits inside — even exist; ensureBlockquote() needs the
+        // TOTAL target depth from the document root, so this new marker
+        // sequence nests INSIDE that outer blockquote instead of being
+        // mistaken for having already reached it (example #292/#293).
+        // Consumed once: only this, the very next resolution after the
+        // restart, could possibly mean it — a later, ordinary continuation
+        // line legitimately wants curDepth left OUT (it's the same
+        // blockquote being continued, not an unrelated outer one).
+        const bqLevel = this._bqFreshRestart ? curDepth + level : level;
+        this._bqFreshRestart = false;
+        if (!lazy) this.ensureBlockquote(bqLevel);
         this.pending = ''; this.blockDecided = false;
         this._inBlockquoteContent = true;
         const rest = p.slice(i);
+        // The absolute column (this.linePos-based) right where `rest`
+        // itself begins — this.linePos already counts every real
+        // character since true line start, INCLUDING this line's own
+        // leading spaces and its ">" marker(s), and rest.length is
+        // exactly how many of those already-counted characters came
+        // AFTER that point — so subtracting it back out gives a stable
+        // per-line baseline (same value on every one of this line's own
+        // re-invocations of this case, since linePos and rest.length grow
+        // together). A list item opened while replaying this content
+        // (pushNewList()) uses it to record its own contentCol relative to
+        // the blockquote instead of this one line's raw prefix width —
+        // see _effContentCol().
+        this._bqReplayBaseCol = this.linePos - rest.length;
         // Indented code (CommonMark 4.4) applies to blockquote content
         // relative to right after the ">" marker(s), same 4-space rule
         // as at the top level — but the generic per-character replay
@@ -1232,6 +1389,38 @@ class MarkdownStreamer {
         // above as code), so stripping all counted whitespace chars is
         // always correct here.
         const contentAfterIndent = rest.slice(j);
+        // A blank (marker-only) or empty-marker line earlier left a list
+        // item's continuation pending (pendingListBlank/pendingEmptyItem —
+        // see onNewline()'s blank-line handling and openUlDecided()) —
+        // normally processChar()'s own fast path resolves that the moment
+        // the next line's first character arrives, comparing this.lineIndent
+        // (raw leading whitespace) against the item's own contentCol. But
+        // when that list is nested INSIDE this blockquote, "how far indented
+        // is this line's own content" isn't knowable until the blockquote's
+        // own marker(s) — and any indentation right after them — have
+        // actually been stripped, which is exactly the leadSpaces/
+        // contentAfterIndent computation just above; processChar() defers
+        // to here instead whenever a blockquote is already open (see its
+        // own matching comment). Resolve it now, comparing this line's own
+        // blockquote-relative indentation (`j`) against the item's own
+        // (_effContentCol(), using the bqBaseCol recorded when it was
+        // opened during a replay just like this one).
+        if ((this.pendingListBlank || this.pendingEmptyItem) && contentAfterIndent.length > 0) {
+          const fromBlank = this.pendingListBlank;
+          this.pendingListBlank = false; this.pendingEmptyItem = false;
+          this._resolveListBlankContinuation(contentAfterIndent[0], fromBlank, j);
+          for (const c of contentAfterIndent.slice(1)) {
+            if (this.blockDecided) {
+              if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
+              this.onContentChar(c);
+            } else {
+              this.decideBlock(c);
+            }
+            this.lastChar = c;
+          }
+          if (contentAfterIndent.length) this.lastChar = contentAfterIndent[contentAfterIndent.length - 1];
+          return;
+        }
         // Replay the content after the ">" markers through decideBlock
         // itself (not straight to inline text) so a heading, list, fence,
         // etc. inside a blockquote is recognized as one, not forced into a
@@ -1287,6 +1476,7 @@ class MarkdownStreamer {
         this._bd(); this.openTableCell(); return;
 
       case '*': {
+        if (this._listMarkerTooIndented()) { this._blockDefault(ch); return; }
         // Abbreviation definition *[Abbr]:
         if (p[1] === '[') {
           const ci = p.indexOf(']:');
@@ -1321,6 +1511,7 @@ class MarkdownStreamer {
 
       case '-':
         if (p.length === 1) return;
+        if (this._listMarkerTooIndented()) { this._blockDefault(ch); return; }
         if (p.length === 2) {
           // A single TAB right after the marker (e.g. "-\t\tfoo") must
           // defer exactly like a single space does just below — it could
@@ -1398,6 +1589,7 @@ class MarkdownStreamer {
 
       case '+':
         if (p.length === 1) return;
+        if (this._listMarkerTooIndented()) { this._blockDefault(ch); return; }
         if (p[1] === ' ') { this.openUlDecided(p.slice(2), '+'); return; }
         this._blockDefault(ch); return;
 
@@ -1547,6 +1739,7 @@ class MarkdownStreamer {
         // Ordered list — CommonMark allows any digit 0-9 to start the
         // number (start values 0 through 999999999), not just 1-9.
         if (p[0] >= '0' && p[0] <= '9') {
+          if (this._listMarkerTooIndented()) { this._blockDefault(ch); return; }
           let i = 1;
           while (i < p.length && p[i] >= '0' && p[i] <= '9') i++;
           if (i === p.length) return;
@@ -1775,7 +1968,7 @@ class MarkdownStreamer {
     }
     if (ch === '&') { this.entityBuf = '&'; return; }
 
-    if (ch === '<') { this.autolinkBuf = ''; this.autolinkQuote = null; this.autolinkDecl = false; return; }
+    if (ch === '<') { this.autolinkBuf = ''; this.autolinkQuote = null; this.autolinkDecl = false; this._autolinkNLPending = false; this.autolinkSetextWatch = null; return; }
 
     // Bare URL
     if (this.bareUrlOpen) {
@@ -1950,6 +2143,21 @@ class MarkdownStreamer {
     return !!m && this._isValidOpenTagBody(m[1]);
   }
 
+  // Replays a string of characters that were speculatively diverted into
+  // an autolinkSetextWatch (see processChar()) once it's turned out NOT
+  // to be a setext underline after all — normally that's just more
+  // _feedAutolinkChar() content, but one of those characters (e.g. an
+  // unquoted "-"-run's trailing ">" ) could itself resolve or abandon the
+  // scan partway through (autolinkBuf becoming null mid-string), at which
+  // point whatever's left is no longer scan content at all and must go
+  // back through the ordinary per-character pipeline instead.
+  _feedAutolinkReplay(str) {
+    for (const c of str) {
+      if (this.autolinkBuf !== null) this._feedAutolinkChar(c);
+      else this.processChar(c);
+    }
+  }
+
   // Feeds one character of a buffered "<...>" span (autolinkBuf !== null),
   // called from onInlineChar for ordinary characters and from onNewline()
   // for a raw "\n" that arrives mid-span — CommonMark allows a comment,
@@ -2021,6 +2229,7 @@ class MarkdownStreamer {
   _flushAutolinkAsLiteral() {
     const buf = this.autolinkBuf;
     this.autolinkBuf = null; this.autolinkQuote = null;
+    this._autolinkNLPending = false; this.autolinkSetextWatch = null;
     // The opening "<" itself is written directly as literal text, NOT
     // replayed through onInlineChar() — replaying it would immediately
     // re-trigger the exact same "does this open a tag/autolink?" check
@@ -2063,6 +2272,7 @@ class MarkdownStreamer {
   _resolveAutolinkBuf() {
     const buf = this.autolinkBuf;
     this.autolinkBuf = null; this.autolinkQuote = null;
+    this._autolinkNLPending = false; this.autolinkSetextWatch = null;
 
     const closeMatch = buf.match(/^\/([a-zA-Z][a-zA-Z0-9-]*)\s*$/);
     if (closeMatch) {
@@ -3131,6 +3341,7 @@ class MarkdownStreamer {
     this.lineIndent = base + leadSpaces;
     this.needsJoinSpace = false;
     this._inListContinuation = true;
+    this._bqFreshRestart = true; // see its own comment
     this.decideBlock(firstChar);
   }
 
@@ -3173,6 +3384,7 @@ class MarkdownStreamer {
       // _popToBlockContainer() — same _inListContinuation guard used for a
       // list item's SECOND block (_resolveListBlankContinuation()).
       this._inListContinuation = true;
+      this._bqFreshRestart = true; // see its own comment
       for (const c of rest) {
         if (this.blockDecided) {
           if (c === ' ') this.trailingSpaces++; else this.trailingSpaces = 0;
@@ -3815,6 +4027,10 @@ class MarkdownStreamer {
           this.listStack.pop(); this.pushNewList(type, indent, marker, startNum, contentCol);
         } else {
           now.contentCol = contentCol;
+          // A new sibling marker line has its own (possibly differently-
+          // sized) blockquote prefix — refresh bqBaseCol to match, same
+          // reasoning as pushNewList()'s own initial assignment.
+          now.bqBaseCol = this._bqReplayBaseCol;
           // This new item follows a blank line and reuses the SAME list
           // (not a fresh one) — that blank line separated two items of this
           // list, which is exactly what makes it loose.
@@ -3831,7 +4047,14 @@ class MarkdownStreamer {
   pushNewList(type, indent, marker, startNum, contentCol) {
     const list = this.dom.push(type);
     if (type === 'ol' && startNum !== undefined && startNum !== 1) list.setAttribute('start', String(startNum));
-    this.listStack.push({ el: list, type, indent, marker, contentCol, loose: false });
+    // bqBaseCol: null unless this item is being opened WHILE replaying a
+    // blockquote's own content (decideBlock()'s "case '>'" sets
+    // this._bqReplayBaseCol for the duration of that replay) — see
+    // _effContentCol(), which uses it to turn this absolute contentCol
+    // into one relative to the blockquote instead, since a blockquote's
+    // raw marker-prefix width (unlike a plain list's own indentation) can
+    // legitimately differ from one line to the next.
+    this.listStack.push({ el: list, type, indent, marker, contentCol, loose: false, bqBaseCol: this._bqReplayBaseCol });
   }
 
   // Called for the first character of the line right after a blank line that
@@ -3845,14 +4068,54 @@ class MarkdownStreamer {
   // the list (that content ends up going through _blockDefault(), sees
   // dom.currentTag() is no longer P/LI/DD, and calls fallbackToParagraph(),
   // which is what actually clears listStack once the list is genuinely done).
+  // The contentCol to actually compare a line's indentation against: the
+  // plain stored value for an ordinary (non-blockquote) list, but adjusted
+  // to be relative to the blockquote's own content for one opened while
+  // replaying it (bqBaseCol != null — see pushNewList()) — a raw column
+  // comparison there would be comparing two different lines' potentially
+  // differently-sized blockquote-marker prefixes against each other,
+  // which CommonMark's blockquote syntax never requires to match.
+  _effContentCol(entry) {
+    return entry.bqBaseCol != null ? entry.contentCol - entry.bqBaseCol : entry.contentCol;
+  }
+
+  // A potential list-marker (or thematic-break) character, while a list is
+  // already open, that needs 4+ raw columns of indentation yet still falls
+  // SHORT of the innermost open item's own content column, is too indented
+  // to be recognized as any kind of new block here at all — the same flat
+  // 4-space threshold CommonMark applies everywhere else (an ordinary
+  // indented code block, say) governs this too, completely independent of
+  // whatever column each of this list's own PREVIOUS sibling markers
+  // happened to sit at (CommonMark example #312: "- a\n - b\n  - c\n   -
+  // d\n    - e\n" — each of b/c/d IS still a valid sibling of the flat
+  // list despite drifting ever further right, but "- e", one column
+  // deeper still, first crosses the absolute 4-column line while not yet
+  // reaching "d"'s own content column of 5 — the deciding factor is that
+  // absolute threshold, not "one more than d's own indent"). Reaching the
+  // item's content column instead nests as a legitimate sub-list, an
+  // entirely different — unaffected — path.
+  _listMarkerTooIndented() {
+    if (this.listStack.length === 0 || this.lineIndent < 4) return false;
+    const top = this.listStack[this.listStack.length - 1];
+    return this.lineIndent < this._effContentCol(top);
+  }
+
   // `fromBlank`: true when a genuine blank line separated the marker/prior
   // content from this line (the pendingListBlank path — makes the list
   // loose, and this becomes a SECOND paragraph); false when this is the
   // very next line right after a list marker with no content of its own
   // (e.g. "-\n" — the pendingEmptyItem path) — that item stays tight, and
   // this is simply its (first and only) content, not a second block.
-  _resolveListBlankContinuation(ch, fromBlank) {
+  // `indentOverride`: when given, used in place of this.lineIndent for
+  // every comparison below — needed when this is being resolved from
+  // WITHIN a blockquote's own content replay (decideBlock()'s "case
+  // '>'"), where this.lineIndent only ever reflects this line's raw
+  // leading whitespace BEFORE its ">" marker(s), not the indentation of
+  // its actual (post-marker) content — the caller passes the already-
+  // computed blockquote-relative leadSpaces (`j`) instead.
+  _resolveListBlankContinuation(ch, fromBlank, indentOverride) {
     let top = this.listStack[this.listStack.length - 1];
+    const indent = indentOverride !== undefined ? indentOverride : this.lineIndent;
     // This line's indent may fall short of the INNERMOST list's own
     // content column while still qualifying for an OUTER one — e.g.
     // "* foo\n  * bar\n\n  baz\n": "baz" doesn't belong to "bar"'s
@@ -3861,13 +4124,13 @@ class MarkdownStreamer {
     // and the <ul>/<ol> it was the last child of) before checking the
     // next one out, same as decideBlock()'s own multi-level dedent
     // logic for a genuinely new sibling marker.
-    while (top && this.lineIndent < top.contentCol && this.listStack.length > 1) {
+    while (top && indent < this._effContentCol(top) && this.listStack.length > 1) {
       if (this.dom.currentTag() === 'LI') { this._flushEmphasis(this.dom.current); this.dom.pop(); }
       if (['UL', 'OL'].includes(this.dom.currentTag())) this.dom.pop();
       this.listStack.pop();
       top = this.listStack[this.listStack.length - 1];
     }
-    if (top && this.lineIndent >= top.contentCol) {
+    if (top && indent >= this._effContentCol(top)) {
       this.lineIndent = 0; this.leadingWsChars = 0;
       if (fromBlank) {
         // A second paragraph within the same item: this blank line
@@ -3898,6 +4161,20 @@ class MarkdownStreamer {
           // fence's relative indent from them only works if the fence's
           // OWN recorded opening column matches that same absolute scale.
           this.lineIndent = top.contentCol;
+        } else if (/^[-*+0-9]$/.test(ch)) {
+          // A list marker opened here (e.g. CommonMark example #109:
+          // "1.  foo\n\n    - bar\n", indented exactly to "1.  foo"'s own
+          // content column) needs the SAME restoration, for the SAME
+          // reason: openUlDecided()/the digit case both read
+          // this.lineIndent (not the 0 it was just reset to) as the new
+          // marker's own "indent" — openListItem()'s "indent >=
+          // top.contentCol" nesting check needs that real value to
+          // correctly recognize this as a NESTED sub-list of the current
+          // item rather than mistaking it for a dedented sibling of some
+          // OUTER list (or, worse, an entirely new top-level one). The
+          // new marker's own contentCol is unaffected — that's still
+          // computed from this.linePos, never reset here.
+          this.lineIndent = top.contentCol;
         }
       } else {
         // This is the item's very FIRST content (an empty-marker line has
@@ -3912,7 +4189,9 @@ class MarkdownStreamer {
         // otherwise record as its own opening indent, understripping (or
         // in this case not stripping at all) every content line's shared
         // 2-space indent instead of the item's real content column.
-        if (ch === '`' || ch === '~') this.lineIndent = top.contentCol;
+        // Same list-marker restoration as the fromBlank branch above, and
+        // for the identical reason.
+        if (ch === '`' || ch === '~' || /^[-*+0-9]$/.test(ch)) this.lineIndent = top.contentCol;
       }
       // Whatever decideBlock() opens for `ch` (a fence, table, blockquote,
       // ...) must stay nested inside THIS <li> — closeBlock() (called by
@@ -3922,6 +4201,7 @@ class MarkdownStreamer {
       // this session. Reset every line (resetLine()), so this only
       // affects this one replay, not the whole rest of the document.
       this._inListContinuation = true;
+      this._bqFreshRestart = true; // see its own comment
       this.decideBlock(ch);
       return;
     }
