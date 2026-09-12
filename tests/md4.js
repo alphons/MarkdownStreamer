@@ -2237,7 +2237,20 @@ class MarkdownStreamer {
       // siblings of dom.current, so this bug only bit exactly because
       // both ended up, wrongly, in the same container) — CommonMark:
       // "*[foo*]" must NOT let the trailing "*" close the leading one.
-      this.flushInlinePending();
+      // Resolved with `ch` itself ('!' or '[', both ASCII punctuation) as
+      // the flanking character — NOT flushInlinePending()'s own "abrupt
+      // end of scope" treatment (which flanks against a boundary, as if
+      // nothing followed at all) — since something very much DOES follow
+      // right here, right now, and a "*"/"_" immediately before an
+      // upcoming "[" or "!" needs the exact same flanking treatment it
+      // would get before any other ordinary punctuation character (e.g.
+      // CommonMark #519's "*[bar [baz](/uri)](/uri)*", whose leading "*"
+      // must be able to OPEN even though it's immediately followed by
+      // "["). `null` as the first argument only stops resolveInlinePending
+      // from writing `ch` as literal text itself — it's about to be
+      // handled properly (as the start of a link/image attempt) by the
+      // rest of this same function, not written as plain content.
+      this.resolveInlinePending(null, ch);
     }
     if (ch === '!') { this.linkState = 'bang'; this.linkIsImage = true; this.prevCharWs = false; return; }
     if (ch === '[') {
