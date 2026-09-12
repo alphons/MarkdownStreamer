@@ -14,6 +14,15 @@ const HTML_BLOCK6_TAGS = new Set(['address','article','aside','base','basefont',
 // Type 1: ends on a line containing the matching closing tag, not a blank line.
 const HTML_BLOCK1_TAGS = new Set(['script','pre','style','textarea']);
 const VOID_TAGS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+// Every block-level container tag name this streamer ever pushes onto the
+// DOM stack (the type-1/6 HTML-block tag lists already enumerate almost
+// all of them, including 'p'/'li'/'dd'/'blockquote' themselves) — used by
+// _nearestParaAncestorTag() below to know where to stop bridging upward
+// through plain inline elements (e.g. an unclosed "<a href=\"bar\">" raw
+// HTML tag recognized mid-paragraph, CommonMark 6.9) when deciding whether
+// dom.current is still logically inside an open paragraph/list-item/
+// definition's content.
+const BLOCK_LEVEL_TAGNAMES = new Set([...HTML_BLOCK6_TAGS, ...HTML_BLOCK1_TAGS].map(t => t.toUpperCase()));
 
 // ─── DomStack ─────────────────────────────────────────────────────────────────
 class DomStack {
@@ -95,6 +104,8 @@ class MarkdownStreamer {
     this.defPending = null;
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
     this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+    this.rawHtmlInBlockquote = false; this.rawHtmlBqFirstLinePending = false;
+    this.rawHtmlInListItem = false; this.rawHtmlListContentCol = 0;
     this._rawHtmlChain = null;
     this._openRawHtmlEls = new Set();
     this.mathInlineBuf = null; // "$...$" — not CommonMark, a common AI-output extension
@@ -836,7 +847,91 @@ class MarkdownStreamer {
       this.resetLine(); return;
     }
     if (this.inRawHtml) {
-      const line = this.rawHtmlLineBuf;
+      let line = this.rawHtmlLineBuf;
+      if ((this.rawHtmlInBlockquote || this.rawHtmlInListItem) && this.rawHtmlBqFirstLinePending) {
+        // This first line's own ">" marker (or list marker + required
+        // space) was already consumed by the ordinary blockquote/list
+        // replay mechanism before the block even opened (see
+        // _startHtmlBlock()) — `line` is already just the content after
+        // it, nothing left to strip here.
+        this.rawHtmlBqFirstLinePending = false;
+      } else if (this.rawHtmlInBlockquote) {
+        // An HTML block opened while replaying a blockquote's own ">"-led
+        // content (see _startHtmlBlock()) is scoped to that blockquote's
+        // content the same way an ordinary paragraph inside one is: each
+        // further line must itself carry the blockquote's own ">" marker
+        // (plus the single optional space after it) to continue — that
+        // marker was blindly appended character-by-character as part of
+        // this line like any other raw content (processChar()'s inRawHtml
+        // bypass has no idea it's structural), so strip it back out of
+        // both the just-finished line and the tail of the accumulated
+        // buffer before treating the rest as real block content.
+        const m = line.match(/^>[ \t]?/);
+        if (m) {
+          const stripped = line.slice(m[0].length);
+          this.rawHtmlBuf = this.rawHtmlBuf.slice(0, this.rawHtmlBuf.length - line.length) + stripped;
+          line = stripped;
+        } else {
+          // No ">" at all (most commonly a genuinely blank line) — this
+          // line doesn't continue the blockquote, which means it doesn't
+          // continue the HTML block either: CommonMark needs no blank
+          // line or matching closing tag of its own to end one nested
+          // this way — it simply ends, implicitly, the instant the
+          // enclosing blockquote does. Flush using only what was
+          // accumulated BEFORE this line (which never belonged to the
+          // block at all), close the blockquote the same way it always
+          // closes on a line like this, then replay this line's own text
+          // — including the line ending that got us here — through the
+          // ordinary per-character pipeline exactly as if it had arrived
+          // fresh at whatever level closing the blockquote now leaves.
+          this.rawHtmlBuf = this.rawHtmlBuf.slice(0, this.rawHtmlBuf.length - line.length);
+          this.flushRawHtml();
+          const bq = this.dom.find('BLOCKQUOTE');
+          if (bq) this._pop(bq);
+          this.rawHtmlInBlockquote = false;
+          for (const c of line) this.processChar(c);
+          this.processChar('\n');
+          return;
+        }
+      } else if (this.rawHtmlInListItem) {
+        // An HTML block opened as a list item's own first content (see
+        // _startHtmlBlock()) is scoped to that item's content the same
+        // way indented code or a second paragraph inside one is: each
+        // further line must itself be indented at least to the item's
+        // own content column to continue. CommonMark's type 1-7 HTML
+        // blocks get no lazy continuation the way an ordinary paragraph
+        // does, so anything less indented (most commonly a fresh sibling
+        // marker back at the outer indent) ends the item's content
+        // outright — same tab-aware column count already used by the
+        // generic per-character indentation prologue.
+        let col = 0, i = 0;
+        while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+          col = line[i] === '\t' ? (Math.floor(col / 4) + 1) * 4 : col + 1;
+          i++;
+        }
+        if (col >= this.rawHtmlListContentCol) {
+          const stripped = line.slice(i);
+          this.rawHtmlBuf = this.rawHtmlBuf.slice(0, this.rawHtmlBuf.length - line.length) + stripped;
+          line = stripped;
+        } else {
+          // Not indented far enough to belong to this item any longer —
+          // end the HTML block using only what was accumulated BEFORE
+          // this line, close the item (same as any other block reaching
+          // its end), then replay this line's own text — including the
+          // line ending that got us here — through the ordinary per-
+          // character pipeline exactly as if it had arrived fresh right
+          // after the (now-closed) item, e.g. as this same list's next
+          // sibling marker.
+          this.rawHtmlBuf = this.rawHtmlBuf.slice(0, this.rawHtmlBuf.length - line.length);
+          this.flushRawHtml();
+          const li = this.dom.find('LI');
+          if (li) this._pop(li);
+          this.rawHtmlInListItem = false;
+          for (const c of line) this.processChar(c);
+          this.processChar('\n');
+          return;
+        }
+      }
       this.rawHtmlBuf += '\n';
       this.rawHtmlLineBuf = '';
       if (this.rawHtmlEndMode === 'blank') {
@@ -939,7 +1034,9 @@ class MarkdownStreamer {
         // decideBlock() entirely. Resolve it here the same way once the
         // whole line — just the tag name, nothing else — is known.
         const name = p.slice(p[1] === '/' ? 2 : 1).toLowerCase();
-        if (HTML_BLOCK1_TAGS.has(name)) this._startHtmlBlock('tag', name);
+        // See the matching guard in decideBlock()'s own "<" case: type 1
+        // requires a literal opening tag, not a closing "</pre" etc.
+        if (p[1] !== '/' && HTML_BLOCK1_TAGS.has(name)) this._startHtmlBlock('tag', name);
         else if (HTML_BLOCK6_TAGS.has(name)) this._startHtmlBlock('blank', null);
         else this._continueOrFallback();
         if (this.inRawHtml) { this.rawHtmlBuf += '\n'; this.rawHtmlLineBuf = ''; }
@@ -1020,8 +1117,22 @@ class MarkdownStreamer {
     }
 
     if (!this.blockDecided) {
-      const tag = this.dom.currentTag();
+      let tag = this.dom.currentTag();
       const li = this.dom.find('LI');
+      // dom.current may be sitting inside an unclosed inline raw HTML
+      // element opened earlier in this same top-level (not list-item-
+      // owned) paragraph, e.g. an "<a href=\"bar\">" recognized mid-line
+      // per CommonMark 6.9 (see _resolveAutolinkBuf()'s "dom.current =
+      // el") — rather than the paragraph itself. A genuinely blank line
+      // always ends that paragraph outright (CommonMark 4.8) regardless
+      // of what raw HTML is still open inside it, so pop back out to the
+      // paragraph before running the ordinary tag-based blank-line
+      // handling just below, which otherwise assumes dom.current already
+      // IS one of the tags it switches on.
+      if (!li && tag !== 'P' && tag !== 'DD' && this._nearestParaAncestorTag() === 'P') {
+        while (this.dom.currentTag() !== 'P') this.dom.pop();
+        tag = 'P';
+      }
       if (li && tag === 'LI' && this.pendingEmptyItem) {
         // The list marker's own line had NO content at all, and this
         // line is ALSO blank — CommonMark: such an item stays empty
@@ -1218,8 +1329,7 @@ class MarkdownStreamer {
 
     this._popMarkers();
     if (this.inFootnoteDef) { this.dom.toRoot(); this.inFootnoteDef = false; this.footnoteDefId = ''; }
-    const tag = this.dom.currentTag();
-    this.needsJoinSpace = tag === 'P' || tag === 'LI' || tag === 'DD';
+    this.needsJoinSpace = !!this._nearestParaAncestorTag();
     this.resetLine();
   }
 
@@ -1247,6 +1357,32 @@ class MarkdownStreamer {
   }
 
   // ── Block decision ─────────────────────────────────────────────────────────
+  // Whether dom.current is (or is nested inside, via an unclosed inline raw
+  // HTML element like "<a href=\"bar\">" recognized mid-paragraph per
+  // CommonMark 6.9 — see _resolveAutolinkBuf()'s "this.dom.current = el")
+  // an open paragraph/list-item/definition's content — i.e. whether a
+  // plain content character or line ending should continue that block
+  // rather than being treated as having left it entirely. Walking the
+  // ancestor chain (not just checking dom.currentTag() directly) matters
+  // because dom.current can sit several inline elements deep inside the P
+  // while that inline raw HTML tag's matching close (if any) hasn't
+  // arrived yet.
+  _nearestParaAncestorTag() {
+    let el = this.dom.current;
+    // Bridge upward only through plain INLINE elements — stop at the
+    // first genuine block-level container, whatever it is, rather than
+    // continuing past it (which would wrongly credit e.g. a <blockquote>
+    // freshly pushed inside a list item as "still inside that item's own
+    // paragraph content").
+    while (el && !BLOCK_LEVEL_TAGNAMES.has(el.nodeName)) {
+      if (el === this.dom.bottomStack) return null;
+      el = el.parentNode;
+    }
+    if (!el) return null;
+    const t = el.nodeName;
+    return (t === 'P' || t === 'LI' || t === 'DD') ? t : null;
+  }
+
   _blockDefault(ch) {
     if (this.defPending) {
       if (this.defPending.type === 'ref') { if (this._feedDefChar(ch) === 'reprocess') this._reprocessAfterDef(ch); }
@@ -1254,7 +1390,7 @@ class MarkdownStreamer {
       return;
     }
     const tag = this.dom.currentTag();
-    if (tag === 'P' || tag === 'LI' || tag === 'DD') {
+    if (this._nearestParaAncestorTag()) {
       if (this.needsJoinSpace) { this.needsJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
       this.feedPendingAsInline(); this.blockDecided = true; return;
     }
@@ -1763,7 +1899,11 @@ class MarkdownStreamer {
           // separately check for a following space/">"/"/".
           if (p.length === m[0].length) return; // still building the name, wait
           const name = m[1].toLowerCase();
-          if (HTML_BLOCK1_TAGS.has(name)) { this._startHtmlBlock('tag', name); return; } // type 1
+          // CommonMark 4.6's type-1 start condition requires a literal
+          // OPENING "<script"/"<pre"/"<style"/"<textarea" — a closing
+          // "</pre" etc. does not qualify (only type 6 allows either
+          // "<" or "</" before its tag name).
+          if (p[1] !== '/' && HTML_BLOCK1_TAGS.has(name)) { this._startHtmlBlock('tag', name); return; } // type 1
           if (HTML_BLOCK6_TAGS.has(name)) { this._startHtmlBlock('blank', null); return; } // type 6
         }
         // Type 7: not a recognized block-level tag name, but this line
@@ -3203,8 +3343,7 @@ class MarkdownStreamer {
   // soft-break join space) instead of starting a new one, matching how
   // decideBlock's own _blockDefault() treats an ordinary continuation line.
   _continueOrFallback() {
-    const tag = this.dom.currentTag();
-    if (tag === 'P' || tag === 'LI' || tag === 'DD') {
+    if (this._nearestParaAncestorTag()) {
       if (this.hadJoinSpace) { this.hadJoinSpace = false; this.appendToTextNode(' '); this.lastChar = ' '; }
       this.feedPendingAsInline(); this.blockDecided = true;
     } else this.fallbackToParagraph();
@@ -3665,12 +3804,43 @@ class MarkdownStreamer {
   }
 
   _startHtmlBlock(mode, closeTag) {
+    // Snapshotted once, at open time — not read live later — same
+    // pattern already used for fenceInBlockquote just above: whether
+    // THIS block was opened while replaying a blockquote's own ">"-led
+    // line content (CommonMark 4.6 interacting with 5.1's lazy
+    // continuation). An HTML block opened this way is scoped to the
+    // blockquote's content the same way an ordinary paragraph inside one
+    // is — see onNewline()'s inRawHtml handling for how it actually ends
+    // implicitly when the blockquote does, without ever needing a blank
+    // line or matching closing tag of its own.
+    const openedInBlockquote = this._inBlockquoteContent;
+    // Same idea, for a list item's own first content instead of a
+    // blockquote's (_inListContinuation is set the same way by
+    // openUlDecided()/openListItem()'s equivalent replay of a marker's
+    // own first line — e.g. "- <div>"). Captures the item's content
+    // column too: onNewline() needs it on every later line to tell
+    // whether that line is still indented far enough to belong to this
+    // same item.
+    const openedInListItem = this._inListContinuation;
+    const listTop = openedInListItem ? this.listStack[this.listStack.length - 1] : null;
     this.closeBlock();
     this.inRawHtml = true;
     this.rawHtmlBuf = this.pending;
     this.rawHtmlLineBuf = this.pending;
     this.rawHtmlEndMode = mode;
     this.rawHtmlCloseTag = closeTag;
+    this.rawHtmlInBlockquote = openedInBlockquote;
+    this.rawHtmlInListItem = openedInListItem;
+    this.rawHtmlListContentCol = listTop ? listTop.contentCol : 0;
+    // This block's own OPENING line already had its ">" marker (or list
+    // marker + required space) consumed by the ordinary blockquote/list
+    // replay mechanism (case '>':/openUlDecided()) before
+    // `_startHtmlBlock` was ever reached — only rawHtmlBuf/rawHtmlLineBuf
+    // content accumulated AFTER this point (i.e. every LATER line, fed
+    // through processChar()'s unconditional inRawHtml bypass, which has
+    // no idea a ">" marker or list indentation is structural) still needs
+    // it stripped.
+    this.rawHtmlBqFirstLinePending = openedInBlockquote || openedInListItem;
     this._bd();
   }
 
@@ -3693,6 +3863,7 @@ class MarkdownStreamer {
         this._rawHtmlChain = null;
         this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
         this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+        this.rawHtmlInBlockquote = false; this.rawHtmlInListItem = false;
         this.resetLine();
         return;
       }
@@ -3791,8 +3962,24 @@ class MarkdownStreamer {
           const tag = el.tagName.toLowerCase();
           const explicitlyClosed = new RegExp('</' + tag + '(?=[\\s>])', 'i').test(raw);
           if (!explicitlyClosed) {
-            this._openRawHtmlEls.add(el);
-            this.dom.current = el;
+            // The element that stays "open" for subsequent content isn't
+            // necessarily `el` itself — raw's own source can open SEVERAL
+            // levels of nested tags on one line with none of them closed
+            // (e.g. "<table><tr><td>\n<pre>\n**Hello**,\n", CommonMark
+            // example #148: `el` is <table>, but a real streaming HTML
+            // parser given only that text is actually still sitting
+            // inside the innermost <pre>). Walk to that deepest still-
+            // open descendant and register every element on the way
+            // down, not just `el`, so _popToBlockContainer() keeps the
+            // WHOLE chain open (any of them could turn out to be a later
+            // raw-HTML block's matching close, not only the outermost).
+            let deepest = el;
+            this._openRawHtmlEls.add(deepest);
+            while (deepest.lastElementChild) {
+              deepest = deepest.lastElementChild;
+              this._openRawHtmlEls.add(deepest);
+            }
+            this.dom.current = deepest;
             // raw.trim() above dropped the trailing line ending that
             // separated this block's last line from whatever comes
             // next while it's kept open — without it, e.g. "<div>\n
@@ -3800,7 +3987,7 @@ class MarkdownStreamer {
             // SAME block's literal content) loses the only thing that
             // would otherwise separate "*foo*" from a directly-
             // following element once more content is appended here.
-            el.appendChild(document.createTextNode('\n'));
+            deepest.appendChild(document.createTextNode('\n'));
           } else if (/\s$/.test(raw)) {
             // Explicitly closed within its own text after all (e.g.
             // "<div>...</div>" all as one blank-line-terminated block) —
@@ -3824,6 +4011,7 @@ class MarkdownStreamer {
     this._rawHtmlChain = { parent, nodes: insertedNodes, raw };
     this.inRawHtml = false; this.rawHtmlBuf = ''; this.rawHtmlLineBuf = '';
     this.rawHtmlEndMode = null; this.rawHtmlCloseTag = null;
+    this.rawHtmlInBlockquote = false; this.rawHtmlInListItem = false;
     this.resetLine();
   }
 
