@@ -90,6 +90,7 @@ class MarkdownStreamer {
     this._autolinkNLPending = false; this.autolinkSetextWatch = null;
     this.bareUrlBuf = null; this.bareUrlOpen = false; this.prevCharWs = true;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
+    this._urlNLPending = false; this._urlCrossedNewline = false;
     this.refDefs = {};
     this.inCodeFence = false; this.inIndentCode = false; this.pendingIndentNL = 0; this.indentCodeListCol = null; this.indentCodeInBlockquote = false;
     this.fenceChar = '`'; this.fencePrefix = ''; this.closingFenceBuf = null; this.fenceLineHasContent = false;
@@ -171,6 +172,7 @@ class MarkdownStreamer {
     this.urlPhase = 'dest'; this.urlAngle = undefined;
     this.urlDest = ''; this.urlTitle = null; this.urlTitleQuote = null;
     this.urlParenDepth = 0; this.urlEscapeNext = false; this.urlRawBuf = ''; this.urlFailed = false;
+    this._urlNLPending = false; this._urlCrossedNewline = false;
   }
   _resetSetext()     { this.setextWatch = false; this.setextBuf = ''; this.setextChar = ''; this.setextFailed = false; this.setextTrailing = false; }
   _resetHr()         { this.hrWatch = false; this.hrChar = ''; this.hrCount = 0; this.hrFailed = false; this.hrBuf = ''; }
@@ -265,6 +267,105 @@ class MarkdownStreamer {
       }
       if (ch === '\n') { this._autolinkNLPending = true; return; }
       this._feedAutolinkChar(ch);
+      return;
+    }
+    // A link/image destination or title, once inside its own "(...)" (see
+    // case 'url'/'img_url' in onLinkChar), may itself span more than one
+    // physical line — CommonMark 6.3's grammar allows optional whitespace
+    // around the destination and around the title, including AT MOST ONE
+    // line ending in each such gap, same as a reference definition's own
+    // destination/title already spans lines via _feedDefChar()'s onNewline()
+    // hooks. The ordinary per-line machinery below (onNewline(), via
+    // resetLine()) unconditionally clears linkState/urlBuf on every line
+    // ending, which would silently discard an in-progress multi-line
+    // attempt — so, same as the open "<...>" raw-HTML/autolink scan bypass
+    // just above, every character here (including this line's own "\n") is
+    // fed directly into the destination/title scan instead of running
+    // through ordinary block-transition logic. A line ending is deferred
+    // one character so a FOLLOWING blank line (two line endings in a row)
+    // — which per CommonMark always ends the enclosing paragraph, and with
+    // it any dangling destination/title attempt, same as an ordinary
+    // unterminated one — can be told apart from an OK one with real content
+    // after it: only once we see what follows do we know which. On that
+    // blank-line abort, both deferred line endings are replayed through the
+    // ordinary per-character pipeline exactly as if this bypass had never
+    // intercepted them (same "abort, then reprocess normally" shape used
+    // just above for a failed autolink-scan setext watch).
+    if (this.linkState === 'url' || this.linkState === 'img_url') {
+      if (ch === '\n') {
+        // An angle-bracketed "<...>" destination can NEVER validly contain
+        // a line ending, full stop (CommonMark 6.3) — unlike the optional
+        // whitespace AROUND the destination/title (handled by the
+        // tolerate-and-see logic below), this is an outright grammar
+        // violation the instant it happens, not something a later closing
+        // ")" could still redeem by finding a valid resolution — so it
+        // aborts the whole attempt right here rather than joining the
+        // general "wait and see what follows" handling, which would
+        // otherwise keep this dangling attempt open indefinitely, silently
+        // swallowing however many further lines it takes to stumble onto
+        // some ")" character completely unrelated to it (example #494:
+        // three separate, independently-failing lines must each get their
+        // own fresh attempt, not all three folded into just the first).
+        if (this.urlPhase === 'dest' && this.urlAngle === true) {
+          this._urlNLPending = false;
+          this._flushDanglingLinkState();
+          this.processChar('\n');
+          return;
+        }
+        if (this._urlNLPending) {
+          // Second line ending in a row with nothing real in between — a
+          // genuinely blank line, which per CommonMark always ends the
+          // enclosing paragraph and, with it, any dangling destination/
+          // title attempt, same as an ordinary unterminated one — abort,
+          // then replay both deferred line endings through the ordinary
+          // per-character pipeline exactly as if this bypass had never
+          // intercepted them (same "abort, then reprocess normally" shape
+          // used just above for a failed autolink-scan setext watch).
+          this._urlNLPending = false;
+          this._flushDanglingLinkState();
+          this.processChar('\n');
+          this.processChar('\n');
+          return;
+        }
+        // A single line ending elsewhere in the grammar (leading
+        // whitespace before the destination, the gap between destination
+        // and title, inside a multi-line title, or the trailing gap
+        // before the closing ")") IS tolerated (CommonMark 6.3 allows one
+        // around each) — but only once we see whether a SECOND one
+        // immediately follows (the blank-line case just above), so it's
+        // deferred one character rather than fed to the scan right away.
+        this._urlNLPending = true;
+        return;
+      }
+      if (this._urlNLPending) { this._urlNLPending = false; this._feedUrlChar('\n'); this._urlCrossedNewline = true; }
+      // Once this attempt has ALREADY tolerated crossing into a later
+      // line, a gap/trail-phase character that doesn't fit the grammar
+      // there (not whitespace, not a title-opening quote/paren, not the
+      // closing ")") must fail the WHOLE attempt right here rather than
+      // joining the SAME-LINE leniency further down (_feedUrlChar simply
+      // marking urlFailed and continuing to hunt for some eventual ")",
+      // however far off — needed so e.g. "[link](/url \"title \"and\"
+      // title\")" still falls back to fully literal text, matching what it
+      // was typed as) — that leniency is safe to bound to a single line
+      // (a malformed destination/title can only wander so far before
+      // hitting the line's own closing paren or running out of line), but
+      // once it's already spanned a line boundary once, letting it keep
+      // wandering through MORE lines risks swallowing entirely unrelated,
+      // independently-valid content later in the paragraph (example #494:
+      // a second failed attempt's dangling gap phase must not absorb a
+      // THIRD, unrelated line's own "[...](...)" merely because that
+      // line happens to contain a ")" somewhere in it). Aborting instead
+      // reverts this attempt to literal text and gives `ch` (and
+      // everything after it) a fully fresh, independent parse — same
+      // "abort, then let it try again from scratch" shape used for the
+      // angle-bracket and blank-line cases above.
+      if (this._urlCrossedNewline && (this.urlPhase === 'gap' || this.urlPhase === 'trail')
+          && !this._urlPhaseAcceptsChar(ch)) {
+        this._flushDanglingLinkState();
+        this.processChar(ch);
+        return;
+      }
+      this.onLinkChar(ch);
       return;
     }
     if (ch === '\n') { this.onNewline(); return; }
@@ -631,19 +732,26 @@ class MarkdownStreamer {
       this._pushRefImage(refKey, isShortcut);
       this._resetLinkUrl();
     } else if (this.linkState === 'url') {
-      // A link destination/title never reaching its closing ")" before the
-      // line ends — CommonMark's inline-link destination cannot itself
-      // contain a raw line ending (a title spanning lines is a separate,
-      // not-yet-supported case) — the whole "[label](..." attempt, as
-      // typed so far, falls back to literal text, same shape as an
-      // in-line failure (_feedUrlChar returning {failed:true}).
+      // A link destination/title that never reaches its closing ")" at
+      // all (this is genuinely the end of input — processChar()'s own
+      // bypass, see there, already gives an in-progress multi-line
+      // attempt every reasonable chance to still resolve normally via a
+      // REAL closing ")" first) falls back to literal text, same shape as
+      // an in-line failure (_feedUrlChar returning {failed:true}). Any
+      // line ending this attempt tolerated along the way (urlRawBuf may
+      // now legitimately contain one or more, unlike before that bypass
+      // existed) is rendered the same way an ordinary paragraph-internal
+      // one already is elsewhere: a single space, not a preserved literal
+      // "\n" — this text is appended directly (appendToTextNode, not
+      // replayed through onInlineChar), so that conversion doesn't happen
+      // on its own the way it does for the replay-based failure paths.
       const a = this.dom.find('A');
       if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
-      this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
+      this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf).replace(/\n/g, ' '));
     } else if (this.linkState === 'img_url') {
       this.appendToTextNode('![');
       for (const c of this.linkBuf) { this.onInlineChar(c); this.lastChar = c; }
-      this.appendToTextNode('](' + this._unescapeRaw(this.urlRawBuf));
+      this.appendToTextNode('](' + this._unescapeRaw(this.urlRawBuf).replace(/\n/g, ' '));
       this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false; this.linkState = null;
       this._resetUrlParse();
     } else if (this.linkState !== null) {
@@ -2314,6 +2422,19 @@ class MarkdownStreamer {
       this.prevCharWs = false; return;
     }
 
+    // A literal line ending reaching all the way down here — possible only
+    // via a raw-text replay (_replayRawInline() and its callers): the
+    // ordinary streaming path never feeds "\n" to onInlineChar() at all,
+    // processChar() diverts it to onNewline() before it would ever arrive
+    // — is just an ordinary soft line break in ordinary text, same as any
+    // other paragraph-internal line ending, and renders the same way
+    // onNewline() already renders one for the normal streaming path: a
+    // single space, not a preserved literal "\n" (a state that DOES need a
+    // replayed "\n" of its own — most notably an open "<...>" raw-HTML/
+    // autolink scan, since CommonMark 6.9 lets a tag's attributes span
+    // lines — has its own dedicated check earlier in this function that
+    // already returned before reaching here).
+    if (ch === '\n') ch = ' ';
     if (this.inlinePending) { this.resolveInlinePending(ch); this.prevCharWs = (ch === ' '); return; }
     this.appendToTextNode(ch);
     this.prevCharWs = (ch === ' ');
@@ -3253,6 +3374,18 @@ class MarkdownStreamer {
     }
     this._resetLinkUrl();
     if (extraCh !== null) this.appendToTextNode(extraCh);
+  }
+
+  // Mirrors (read-only — doesn't mutate any parse state, unlike
+  // _feedUrlChar itself) the gap/trail-phase acceptance checks inside
+  // _feedUrlChar, so processChar()'s own bypass can decide whether a
+  // character is even worth feeding BEFORE committing it to the scan —
+  // see the "already crossed a newline" check there. Only meaningful for
+  // urlPhase 'gap'/'trail'; not called otherwise.
+  _urlPhaseAcceptsChar(ch) {
+    if (this.urlPhase === 'gap') return ch === ')' || this._isLinkWs(ch) || ch === '"' || ch === "'" || ch === '(';
+    if (this.urlPhase === 'trail') return ch === ')' || this._isLinkWs(ch);
+    return true;
   }
 
   // Feeds one character of a `(...)` inline link/image destination + title,
@@ -5084,6 +5217,19 @@ class MarkdownStreamer {
     // handle it, before any of finalize()'s own (inline-level) cleanup —
     // none of which applies yet if the block type isn't even decided.
     if (!this.blockDecided && this.pending) this.onNewline();
+
+    // A link/image destination or title still dangling (processChar()'s
+    // own bypass, above, kept it open across one or more line endings
+    // hoping for a closing ")" that never actually came before the input
+    // itself ran out) needs the same literal-text fallback an ordinary
+    // same-line failure already gets — nothing else ever resolves this at
+    // true end-of-input, since that bypass deliberately skips onNewline()
+    // (and its normal _flushDanglingLinkState() call) while tolerating a
+    // mid-attempt line ending.
+    if (this.linkState === 'url' || this.linkState === 'img_url') {
+      this._urlNLPending = false;
+      this._flushDanglingLinkState();
+    }
 
     // Same as onNewline()'s handling: a counted closing-backtick run is only
     // confirmed once a following character rules out a longer run — one
