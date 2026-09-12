@@ -308,7 +308,20 @@ class MarkdownStreamer {
         // own fresh attempt, not all three folded into just the first).
         if (this.urlPhase === 'dest' && this.urlAngle === true) {
           this._urlNLPending = false;
-          this._flushDanglingLinkState();
+          // A link (not image) destination gets the same "replay the raw
+          // source through the ordinary inline pipeline" treatment as an
+          // ordinary in-line destination failure (see
+          // _abortUrlToLiteralReplay()) rather than a plain escaped-text
+          // dump — needed so e.g. example #491's "<foo\nbar>" still gets
+          // its own fresh, independent chance to be recognized by the
+          // ordinary inline raw-HTML-tag scanner (which, unlike the link-
+          // destination grammar just abandoned here, already tolerates a
+          // tag's own attributes spanning multiple lines). Images keep the
+          // old direct-literal fallback (_flushDanglingLinkState) — no
+          // known CommonMark case exercises the equivalent replay there,
+          // so it's left alone rather than risk an unverified change.
+          if (this.linkState === 'url') this._abortUrlToLiteralReplay();
+          else this._flushDanglingLinkState();
           this.processChar('\n');
           return;
         }
@@ -2563,7 +2576,29 @@ class MarkdownStreamer {
     }
     if (ch === '"' || ch === "'") { this.autolinkQuote = ch; this.autolinkBuf += ch; return; }
     if (ch === '>') { this._resolveAutolinkBuf(); return; }
-    if (ch === '<') { this._flushAutolinkAsLiteral(); this.autolinkBuf = ''; this.autolinkQuote = null; return; }
+    if (ch === '<') {
+      this._flushAutolinkAsLiteral();
+      // The flush's own replay (see _flushAutolinkAsLiteral()) can itself
+      // have opened a fresh, still-pending link/image destination attempt
+      // — e.g. the abandoned text contained a "[...](" sequence, which
+      // "[" always tries live regardless of context. When that happens,
+      // THIS "<" genuinely belongs to THAT attempt's own destination
+      // parsing (most commonly the start of its own angle-bracketed
+      // "(<...)" destination, exactly the shape case 'url' already knows
+      // how to feed a "<" into) — not an unrelated, brand new autolink/tag
+      // scan of its own. Re-dispatching it through the ordinary
+      // per-character pipeline (which checks linkState first) routes it
+      // to onLinkChar instead; only start a fresh scan here when nothing
+      // is pending. Example: "[a](<b)c\n[a](<b)c>\n[a](<b>c)" (CommonMark
+      // #494) — line 1's failed attempt reverts to literal "<b)c" text
+      // that itself contains a fresh "[a](" attempt for line 2; without
+      // this check, line 2's own "<" would wrongly start ANOTHER autolink
+      // scan instead of feeding line 2's "(...)" destination parser,
+      // swallowing everything after it (including line 3) as that scan's
+      // buffered content instead of letting each line fail independently.
+      if (this.linkState !== null) { this.onInlineChar(ch); return; }
+      this.autolinkBuf = ''; this.autolinkQuote = null; return;
+    }
     this.autolinkBuf += ch;
     if (this.autolinkBuf.length > 2000) this._flushAutolinkAsLiteral();
   }
@@ -2682,7 +2717,16 @@ class MarkdownStreamer {
     // buffered waiting for the closing ">", so replaying it through that
     // pipeline now, out of its original streaming context, doesn't
     // reproduce what char-by-char parsing would actually have done.
-    this.appendToTextNode('<' + buf.replace(/\\([!-/:-@[-`{-~])/g, '$1') + '>');
+    // The escape scan runs over `buf + '>'` together, not `buf` alone —
+    // the closing ">" itself is exactly the character a trailing lone
+    // backslash in `buf` may be escaping (e.g. "<bar\>": buf is "bar\",
+    // whose backslash has nothing to pair with INSIDE buf, but pairs with
+    // the ">" that follows it once both are considered together — the
+    // whole point of "\>" is to keep that ">" from ending anything,
+    // exactly what happened here (it ended the tag/autolink scan instead,
+    // but that failed, so this fallback is precisely where the escape
+    // finally gets to do its ordinary job of yielding a literal ">").
+    this.appendToTextNode('<' + (buf + '>').replace(/\\([!-/:-@[-`{-~])/g, '$1'));
     this.prevCharWs = false;
   }
 
@@ -2978,10 +3022,8 @@ class MarkdownStreamer {
             // it was already resolved during the initial scan regardless
             // of the link ultimately failing (e.g. "[a](<b>c)" -> the
             // "<b>" is a real raw-HTML tag, not escaped "&lt;b&gt;" text).
-            if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
-            const raw = this.urlRawBuf; // captured before abortLinkElement() clears it via _resetUrlParse()
-            this.abortLinkElement(null);
-            for (const c of '(' + raw) { this.onInlineChar(c); this.lastChar = c; }
+            // See _abortUrlToLiteralReplay() for the shared implementation.
+            this._abortUrlToLiteralReplay();
           }
           else {
             if (a) { a.href = result.url; if (result.title) a.title = result.title; this._pop(a); }
@@ -3374,6 +3416,34 @@ class MarkdownStreamer {
     }
     this._resetLinkUrl();
     if (extraCh !== null) this.appendToTextNode(extraCh);
+  }
+
+  // Reverts a failed "(...)" link-destination/title attempt back to
+  // literal "[label]" text, then replays "(" + everything consumed of
+  // the (now abandoned) attempt so far — urlRawBuf, which always holds
+  // every character exactly as typed (see _feedUrlChar's own comment) —
+  // through the ordinary inline pipeline, exactly as typed, rather than a
+  // plain literal text dump: CommonMark's real algorithm never set this
+  // text aside in the first place, so any raw HTML tag/autolink, code
+  // span, entity, or backslash escape inside it is still resolved
+  // normally regardless of the link ultimately failing (e.g. example
+  // #491: "[link](<foo\nbar>)" fails as a link destination — an
+  // angle-bracketed destination can never contain a line ending — but
+  // "<foo\nbar>" still gets its own fresh, independent chance to be
+  // recognized by the ordinary inline raw-HTML-tag scanner, which
+  // (unlike the destination grammar) already tolerates a tag's own
+  // attributes spanning multiple lines, see processChar()'s autolinkBuf
+  // handling above). Shared by the immediate-failure path in case 'url'
+  // below and processChar()'s own angle-bracket embedded-line-ending
+  // bypass (both abandon this same destination attempt, just detected at
+  // different points — the bypass fires the instant the line ending
+  // itself arrives, before _feedUrlChar ever sees it).
+  _abortUrlToLiteralReplay() {
+    const a = this.dom.find('A');
+    if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
+    const raw = this.urlRawBuf; // captured before abortLinkElement() clears it via _resetUrlParse()
+    this.abortLinkElement(null);
+    for (const c of '(' + raw) { this.onInlineChar(c); this.lastChar = c; }
   }
 
   // Mirrors (read-only — doesn't mutate any parse state, unlike
