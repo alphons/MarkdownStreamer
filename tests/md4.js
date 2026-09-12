@@ -509,6 +509,28 @@ class MarkdownStreamer {
         this.needsJoinSpace = ['P', 'LI', 'DD'].includes(this.dom.currentTag());
         this.resetLine(); return;
       }
+      // Not a clean underline — but a lone "-" immediately followed by a
+      // space/tab (then real content, which is exactly what just ruled out
+      // the underline reading above) is ALSO a valid list-item marker, and
+      // CommonMark decides block structure — including whether a marker
+      // like this INTERRUPTS the paragraph a still-open code span happens
+      // to be sitting in — before any inline content (including that code
+      // span's own search for a matching closer) is considered at all. So
+      // this line isn't really code-span content either: abort the span
+      // back to literal text and replay the whole line through the
+      // ordinary per-character block-decision pipeline (processChar()),
+      // exactly as if the code span had never bypassed it to begin with.
+      // Gated on an already-open list (this.listStack) to keep this narrow
+      // and low-risk: the one CommonMark case this targets (Precedence
+      // example #42: "- `one\n- two`\n") always has one.
+      if (w.char === '-' && /^-[ \t]/.test(w.buf) && this.listStack.length > 0) {
+        this._codeSpanJoinSpacePending = false;
+        this._flushCodeSpans(this.lastBlockEl);
+        this.resetLine();
+        for (const c of w.buf) this.processChar(c);
+        this.onNewline();
+        return;
+      }
       // Not a clean underline after all — this line was always just more
       // code-span content, so the space this same line's own opening
       // deferred (see the lineStart check above) is due now, before it —
@@ -2155,7 +2177,16 @@ class MarkdownStreamer {
         // — "\]" inside a label is a literal "]" character, not the
         // label's own closing bracket, and must not be intercepted
         // here before the escape gets a chance to apply.
-        if (this.autolinkBuf !== null || this.escapeNext) {
+        // Same reasoning applies to a still-open inline code span: once a
+        // backtick run inside the label has opened a code span (buffered
+        // as dom.current._mdMarker), CommonMark scans forward for the
+        // matching closing run with priority over link-bracket matching —
+        // so "]"/"("/etc. reaching here while that span is still open are
+        // just more of the code span's raw content, not link syntax (see
+        // CommonMark 0.31.2 example 525: "[foo`](/uri)`").
+        if (this.autolinkBuf !== null || this.escapeNext
+            || (this.dom.current._mdMarker && this.dom.current._mdMarker[0] === '`')
+            || (this.inlinePending && this.inlinePending[0] === '`')) {
           if (this.linkLabelRaw !== undefined) this.linkLabelRaw += ch;
           this.linkState = null; this.onInlineChar(ch); this.linkState = 'label_open';
           return;
@@ -4007,6 +4038,31 @@ class MarkdownStreamer {
           parent.removeChild(a);
         }
       }
+    });
+
+    // A link attempt whose label never actually reached its own closing "]"
+    // as literal text — the "]" (and everything after, up through the would-
+    // be destination) got swallowed as raw content of a code span opened
+    // INSIDE the label instead (CommonMark 6.1's code-span scan takes
+    // priority over link-bracket matching — see example 525:
+    // "[foo`](/uri)`") — is left here as a real <a> with no href and none
+    // of the other markers (data-implicit-ref/data-ref-key) the normal
+    // "saw a ']', then failed" paths above set. Just the opening "[" was
+    // ever literal syntax, so unwrap back to that (no matching "]" to add
+    // back — it's part of the code span's content now).
+    this.root.querySelectorAll('a').forEach(a => {
+      // initAnchor() stamps target/rel on every <a> OUR OWN link-syntax
+      // handling creates (dom.push('a') sites) — used here to tell those
+      // apart from a raw HTML "<a>" tag typed literally by the user (e.g.
+      // CommonMark 6.9 example 613's "<a><bab><c2c>"), which must survive
+      // untouched even though it likewise has no href.
+      if (a.hasAttribute('href') || a.rel !== 'noopener noreferrer'
+          || a.dataset.implicitRef !== undefined || a.dataset.refKey !== undefined) return;
+      const parent = a.parentNode;
+      if (!parent) return;
+      parent.insertBefore(document.createTextNode('['), a);
+      while (a.firstChild) parent.insertBefore(a.firstChild, a);
+      parent.removeChild(a);
     });
 
     this.root.querySelectorAll('img[data-ref-key]').forEach(img => {
