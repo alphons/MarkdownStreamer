@@ -355,6 +355,31 @@ class MarkdownStreamer {
     this.linePos++;
     if (this.lineStart) this.lineStart = false;
 
+    // A reference definition's destination/title may continue on a LATER
+    // line with arbitrary leading whitespace (CommonMark 4.7 — e.g. a
+    // destination indented well past 4 columns on its own continuation
+    // line, example #193) — that whitespace belongs to _feedDefChar()'s
+    // own dest/gap-phase whitespace-skipping, not to the generic
+    // indentation prologue just below, which would otherwise misread 4+
+    // columns of it as starting an indented code block. Route straight to
+    // decideBlock() (which itself claims every character for a pending
+    // definition first) the same way the blockquote-relative-code and
+    // code-span/autolink-scan bypasses just below and above already skip
+    // this same prologue for their own still-open, cross-line constructs.
+    if (!this.blockDecided && this.defPending && this.defPending.type === 'ref' && !this.defPending.failed) {
+      this.decideBlock(ch); return;
+    }
+    // A reference definition's own "[label]:" label still watching for its
+    // closing "]" across a line ending (see onNewline()'s "[" branch of
+    // the undecided-pending fallback) — same reasoning as the defPending
+    // bypass just above: this line's own leading whitespace belongs to
+    // the label's raw text, not to the generic indentation prologue just
+    // below, which would otherwise misread 4+ columns of it as starting
+    // an indented code block.
+    if (!this.blockDecided && this._labelWatchActive) {
+      this.decideBlock(ch); return;
+    }
+
     // A blockquote-relative indented code block (see case '>':) can only
     // ever be CONTINUED by a line that itself starts with ">" — that's
     // the marker CommonMark requires before a quoted line's own content-
@@ -942,6 +967,33 @@ class MarkdownStreamer {
         this.closeBlock(); this.listStack = [];
         const h = this.dom.push('h' + Math.min(p.length, 6)); this.lastBlockEl = h;
         this._bd(); this.atxLevel = p.length;
+      } else if (p[0] === '[' && p[1] !== '^' && !p.includes(']') && p.length <= 999
+                 && this.linePos > 0
+                 && !(contTag === 'LI' || contTag === 'DD' || (contTag === 'P' && this.dom.current.childNodes.length > 0))) {
+        // A reference definition's own "[label]:" may have its label span
+        // multiple physical lines — CommonMark 6.1's link-label grammar
+        // has no single-line restriction, and 4.7 defines a definition
+        // purely in terms of that label (examples: "[Foo\n  bar]: /url"
+        // and "[\nfoo\n]: /url"). Nothing definitive is known yet (no
+        // closing "]" anywhere so far) — keep waiting across this line
+        // ending instead of falling back to literal paragraph text the
+        // way an ordinary unresolved "[" does (the generic fallback just
+        // below) — decideBlock()'s own "[" case already re-evaluates the
+        // WHOLE accumulated `pending` (embedded line endings and all) for
+        // a "]:" on every new character regardless of how many raw lines
+        // it spans, so simply not losing it here is enough.
+        // Bails back to that same generic fallback instead (via
+        // linePos > 0, false on a genuinely blank continuation line) —
+        // CommonMark: a link label cannot contain a blank line — and via
+        // the 999-char cap already known from CommonMark's own link-
+        // label length limit, so a "[" that will clearly never close
+        // doesn't swallow unbounded input while the user is still typing.
+        const savedPending = p + '\n';
+        this.needsJoinSpace = false;
+        this.resetLine();
+        this.pending = savedPending;
+        this._labelWatchActive = true;
+        return;
       } else {
         // No block construct matched (this covers "[" left unresolved, a
         // "**"/"__" run too short to be a thematic break, or anything else
@@ -1122,14 +1174,14 @@ class MarkdownStreamer {
     }
     if (this.linkState === 'expect_paren') {
       const a = this.dom.find('A');
-      if (a && !a.href) { a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a); }
+      if (a && !a.href) { a.dataset.implicitRef = this._normalizeRefKey(this.linkBuf); this._pop(a); }
       this._resetLinkUrl();
     } else if (this.linkState === 'img_expect_paren' || this.linkState === 'img_ref_id') {
       // A shortcut ![alt] or collapsed/explicit ![alt][ref] ending exactly
       // at end-of-line never reaches onLinkChar's own handling for it
       // (newlines bypass onLinkChar entirely) — resolve it here the same way.
       const isShortcut = this.linkState === 'img_expect_paren';
-      const refKey = (isShortcut ? this.linkBuf : (this.urlBuf.trim() || this.linkBuf.trim())).trim().toLowerCase();
+      const refKey = this._normalizeRefKey(isShortcut ? this.linkBuf : (this.urlBuf.trim() || this.linkBuf));
       this._pushRefImage(refKey, isShortcut);
       this._resetLinkUrl();
     } else if (this.linkState === 'url') {
@@ -1174,6 +1226,7 @@ class MarkdownStreamer {
   resetLine() {
     this.linePos = 0; this.lineIndent = 0; this.leadingWsChars = 0; this.blockDecided = false;
     this.pending = ''; this.inlinePending = ''; this.atxLevel = 0;
+    this._labelWatchActive = false;
     this.linkState = null; this.linkBuf = ''; this.urlBuf = ''; this.linkIsImage = false;
     this.inCell = false; this.tablePipePending = false; this.trailingSpaces = 0;
     this.lineStart = true; this.prevCharWs = true; this.bareUrlBuf = null;
@@ -1644,6 +1697,12 @@ class MarkdownStreamer {
         // FIRST "]:" substring scan above still finds a plausible-looking
         // split point.
         if (ci > 1 && this._hasUnescapedBracket(p.slice(1, ci))) { this._blockDefault(ch); return; }
+        // A label that's nothing but whitespace (e.g. "[\n ]: /uri") isn't
+        // a valid reference label at all (CommonMark 6.1 requires at
+        // least one non-whitespace character) — same literal-text
+        // fallback as the unescaped-bracket case just above, not a
+        // "successful" definition with an empty/blank key.
+        if (ci > 1 && !p.slice(1, ci).trim()) { this._blockDefault(ch); return; }
         if (ci > 1) {
           // A definition produces no visible content of its own — if it's
           // starting inside a still-empty <p> (see the childNodes check
@@ -1656,7 +1715,7 @@ class MarkdownStreamer {
             emptyP.remove();
           }
           this.defPending = {
-            type: 'ref', key: p.slice(1, ci).toLowerCase(),
+            type: 'ref', key: this._normalizeRefKey(p.slice(1, ci)),
             phase: 'dest', dest: '', title: null, titleQuote: null,
             angle: undefined, parenDepth: 0, escapeNext: false, failed: false,
             destLineEnded: false,
@@ -2061,6 +2120,14 @@ class MarkdownStreamer {
       // eventual key needs it (a nested link inside its label already
       // makes it ineligible to become a reference at all regardless).
       if (!nested) this.linkLabelRaw = '';
+      // One shared buffer, many nesting levels: this label's own raw text
+      // starts wherever the buffer currently ends (already includes this
+      // very "[" for a nested open, via label_open's catch-all forwarding
+      // — see there — and is freshly empty for a top-level one, via the
+      // reset just above) — recorded here so the matching "]" can slice
+      // out just THIS label's own portion instead of the whole buffer
+      // (see the 'label_open' case's own "]" handling).
+      (this._labelRawStack || (this._labelRawStack = [])).push((this.linkLabelRaw || '').length);
       this.prevCharWs = false; return;
     }
 
@@ -2397,14 +2464,14 @@ class MarkdownStreamer {
         else {
           // Shortcut reference form: ![alt] with no following (...)/[...] —
           // resolved against refDefs at finalize() (defs may come later).
-          this._pushRefImage(this.linkBuf.trim().toLowerCase(), true);
+          this._pushRefImage(this._normalizeRefKey(this.linkBuf), true);
           if (ch !== '\n') this.onInlineChar(ch);
         }
         return;
 
       case 'img_ref_id':
         if (ch === ']') {
-          const refKey = (this.urlBuf.trim() || this.linkBuf.trim()).toLowerCase();
+          const refKey = this._normalizeRefKey(this.urlBuf.trim() || this.linkBuf);
           this._pushRefImage(refKey, false);
         } else { this.urlBuf += ch; }
         return;
@@ -2469,7 +2536,15 @@ class MarkdownStreamer {
         if (ch === ']') {
           this.flushInlinePending();
           this._popMarkers(); this.textNode = null;
-          const a = this.dom.find('A'); if (a) this.linkBuf = (this.linkLabelRaw ?? a.textContent);
+          const a = this.dom.find('A');
+          // linkLabelRaw is ONE buffer shared across every nesting level
+          // (see the comment where it's pushed, at case '[' above) — this
+          // label's OWN raw text is only the slice from where IT started,
+          // not the whole accumulated buffer (which may still be carrying
+          // an outer label's own earlier content too, e.g. "[[*foo*
+          // bar]]"'s inner "]" must key on "*foo* bar", not "[*foo* bar").
+          const start = this._labelRawStack && this._labelRawStack.length ? this._labelRawStack.pop() : 0;
+          if (a) this.linkBuf = (this.linkLabelRaw !== undefined ? this.linkLabelRaw.slice(start) : a.textContent);
           this.linkState = 'expect_paren'; return;
         }
         if (ch === '^' && this.linkBuf === '') {
@@ -2515,7 +2590,7 @@ class MarkdownStreamer {
 
       case 'ref_id':
         if (ch === ']') {
-          const refKey = (this.urlBuf.trim() || this.linkBuf.trim()).toLowerCase();
+          const refKey = this._normalizeRefKey(this.urlBuf.trim() || this.linkBuf);
           const a = this.dom.find('A');
           if (a && a.querySelector('a')) {
             // Same "a link cannot contain a link" rule as the inline
@@ -2560,10 +2635,18 @@ class MarkdownStreamer {
             // genuinely valid nested link, stays as plain content, with
             // a literal "[" restored before it — never written earlier,
             // since "[" commits straight to a real <a> for the live-
-            // streaming case) and append "(" + the whole failed attempt,
-            // exactly as typed.
+            // streaming case) and replay "(" + the whole failed attempt
+            // through the ordinary inline pipeline, exactly as typed —
+            // NOT a plain literal dump: CommonMark's real algorithm never
+            // set this text aside in the first place, so any raw HTML
+            // tag/autolink, code span, entity, or backslash escape inside
+            // it was already resolved during the initial scan regardless
+            // of the link ultimately failing (e.g. "[a](<b>c)" -> the
+            // "<b>" is a real raw-HTML tag, not escaped "&lt;b&gt;" text).
             if (a) { a.insertBefore(document.createTextNode('['), a.firstChild); a.appendChild(document.createTextNode(']')); }
-            this.abortLinkElement('(' + this._unescapeRaw(this.urlRawBuf));
+            const raw = this.urlRawBuf; // captured before abortLinkElement() clears it via _resetUrlParse()
+            this.abortLinkElement(null);
+            for (const c of '(' + raw) { this.onInlineChar(c); this.lastChar = c; }
           }
           else {
             if (a) { a.href = result.url; if (result.title) a.title = result.title; this._pop(a); }
@@ -2671,14 +2754,14 @@ class MarkdownStreamer {
     const a = this.dom.find('A');
     if (!a) { this._resetLinkUrl(); return; }
     if (a.querySelector('a') || this._findEnclosingA(a)) {
-      const def = !a.querySelector('a') ? this.refDefs[this.linkBuf.trim().toLowerCase()] : null;
+      const def = !a.querySelector('a') ? this.refDefs[this._normalizeRefKey(this.linkBuf)] : null;
       if (def) { a.href = def.url; if (def.title) a.title = def.title; this._pop(a); this._resetLinkUrl(); return; }
       a.insertBefore(document.createTextNode('['), a.firstChild);
       a.appendChild(document.createTextNode(']'));
       this.abortLinkElement(null);
       return;
     }
-    a.dataset.implicitRef = this.linkBuf.toLowerCase(); this._pop(a);
+    a.dataset.implicitRef = this._normalizeRefKey(this.linkBuf); this._pop(a);
     this._resetLinkUrl();
   }
 
@@ -2724,12 +2807,19 @@ class MarkdownStreamer {
 
     if (this.urlPhase === 'dest') {
       if (this.urlAngle === undefined) {
-        this.urlAngle = ch === '<' && this.urlDest === '';
+        // Whitespace (including a line ending) before the destination
+        // itself even starts is tolerated (CommonMark 6.3's link-paren
+        // grammar allows optional whitespace ahead of the destination) —
+        // stay in this "not decided yet" state rather than prematurely
+        // treating it as the gap AFTER an (empty) destination, which
+        // would then reject the destination's own first real character.
+        if (this._isLinkWs(ch)) return null;
+        this.urlAngle = ch === '<';
         if (this.urlAngle) return null; // consume the "<" itself, not part of the destination
       }
       if (this.urlAngle) {
         if (ch === '>') { this.urlPhase = 'gap'; return null; }
-        if (ch === '<') this.urlFailed = true; // an unescaped "<" inside <...> is invalid
+        if (ch === '<' || ch === '\n') this.urlFailed = true; // an unescaped "<" or line ending inside <...> is invalid
         this.urlDest += ch; return null;
       }
       // Bare (unwrapped) destination: balanced, unescaped parens are part
@@ -2826,6 +2916,23 @@ class MarkdownStreamer {
       if (raw[i] === '[' || raw[i] === ']') return true;
     }
     return false;
+  }
+
+  // CommonMark 6.1/6.2/6.3: a reference label (both a definition's own
+  // "[label]:" and a lookup's "[...]"/"[...][...]") is matched
+  // case-INsensitively and with internal whitespace normalized — any run
+  // of whitespace (including a line ending, for a label that spans
+  // multiple physical lines) collapses to a single space, and leading/
+  // trailing whitespace is stripped, before the two sides are compared.
+  // "Case-insensitive" here means full Unicode case folding, not just
+  // ASCII/simple lowercasing — str.toLowerCase() alone leaves U+1E9E "ẞ"
+  // as "ß" (one character), which then wouldn't match a definition's
+  // "SS"/"ss"; round-tripping upper->lower once more folds both down to
+  // the same "ss" (JS has no direct case-fold primitive, but this
+  // three-step chain reproduces it for the common precomposed cases,
+  // CommonMark's own example included).
+  _normalizeRefKey(raw) {
+    return raw.trim().replace(/\s+/g, ' ').toLowerCase().toUpperCase().toLowerCase();
   }
   // CommonMark 6.2 defines "punctuation" for emphasis flanking as any
   // Unicode P (punctuation) or S (symbol) character — not just ASCII
@@ -4414,7 +4521,7 @@ class MarkdownStreamer {
     hardBreaks.forEach(br => br.removeAttribute('data-hardbreak'));
 
     this.root.querySelectorAll('a[href="#"]').forEach(a => {
-      const key = a.dataset.refKey || a.textContent.trim().toLowerCase();
+      const key = a.dataset.refKey || this._normalizeRefKey(a.textContent);
       const def = this.refDefs[key];
       if (def) { a.href = def.url; if (def.title) a.title = def.title; delete a.dataset.refKey; }
       else if (a.dataset.refKey) {
