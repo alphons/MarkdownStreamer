@@ -2743,7 +2743,17 @@ class MarkdownStreamer {
         if (ch === ']') {
           const refKey = this._normalizeRefKey(this.urlBuf.trim() || this.linkBuf);
           const a = this.dom.find('A');
-          if (a && a.querySelector('a')) {
+          // Only a nested bracket that's already genuinely, successfully
+          // resolved into a real link (a real href, not just "#" — see
+          // _finalizeShortcutRef()'s own comment) permanently refuses this
+          // one; a nested bracket that's itself still only DEFERRED
+          // (data-implicit-ref, or href="#" awaiting its own reference) has
+          // no decided fate yet and must not be mistaken for one — this
+          // outer attempt proceeds normally, and finalize()'s
+          // _resolveDeferredIn() re-checks this same "link in link" rule
+          // once every deferred bracket's fate really is known (see its
+          // own _findEnclosingA() guard).
+          if (a && a.querySelector('a[href]:not([href="#"])')) {
             // Same "a link cannot contain a link" rule as the inline
             // '(...)' case — refused regardless of whether refKey turns
             // out to match a real definition. The "[refKey]" that broke
@@ -2815,8 +2825,11 @@ class MarkdownStreamer {
           // inside this label may have already resolved into a real,
           // live-nested <a> (see case '[' above), in which case this
           // outer attempt is refused regardless of whether its own
-          // destination/title syntax is otherwise perfectly valid.
-          if (result.failed || (a && a.querySelector('a'))) {
+          // destination/title syntax is otherwise perfectly valid. Same
+          // "real link only" relaxation as the 'ref_id' case just above —
+          // a still-deferred nested bracket doesn't refuse this one (its
+          // own fate isn't decided yet), see _resolveDeferredIn().
+          if (result.failed || (a && a.querySelector('a[href]:not([href="#"])'))) {
             // Invalid destination/title syntax (or a forbidden nested
             // link) — the "[label]" was never really a link; unwrap the
             // <a> (its content, e.g. already-rendered emphasis OR a
@@ -3044,9 +3057,44 @@ class MarkdownStreamer {
     let changed = true, guard = 0;
     while (changed && guard++ < 10000) {
       changed = false;
-      container.querySelectorAll('a[href="#"]').forEach(a => {
+      // Both passes below walk their matches INNERMOST-FIRST (reverse
+      // document order — a descendant always appears AFTER its ancestor in
+      // normal document order, so reversing a flat querySelectorAll() list
+      // is enough to put every descendant before any of its ancestors,
+      // with no actual tree-depth computation needed) rather than in
+      // ordinary document order. CommonMark resolves nested brackets
+      // innermost-first — real cmark's left-to-right scan always reaches
+      // an INNER bracket's own closing "]" before an enclosing OUTER
+      // bracket's — so if BOTH a still-deferred inner bracket (inside this
+      // one's label) and this one are only decided HERE, at finalize()
+      // (rather than one of them already having resolved live, earlier,
+      // during the original streaming pass), the inner one must get first
+      // claim on "becoming a real link" — CommonMark #533: "[foo *bar
+      // [baz][ref]*][ref]" (only "ref" defined) resolves "[baz][ref]" as
+      // the real link, which — per "a link cannot contain a link" —
+      // permanently deactivates the OUTER "[...][ref]", reverting it to
+      // literal "[foo ...]" text with its own separate "[ref]" then
+      // getting an independent, fresh resolution attempt of its own (see
+      // _revertFailedRefLink()) that in turn ALSO finds "ref" and becomes
+      // its own second, separate real link.
+      Array.from(container.querySelectorAll('a[href="#"]')).reverse().forEach(a => {
         const key = a.dataset.refKey || this._normalizeRefKey(a.textContent);
-        const def = this.refDefs[key];
+        // "Blocked" by the link-cannot-contain-link rule either because an
+        // ancestor is ALREADY a real link (_hasRealEnclosingA — e.g. it
+        // resolved live, during the original streaming pass, well before
+        // finalize() even started), or because — thanks to the innermost-
+        // first order above — a nested bracket inside THIS one's own
+        // label just became a real link earlier in this very pass
+        // (a.querySelector('a[href]:not([href="#"])'), the same "does my
+        // label contain a nested real link" check onLinkChar's own
+        // "]"/"(...)" handling already makes live — this is its
+        // finalize()-time equivalent, for exactly the cases that were
+        // still too undecided to make it there). Treated as an outright
+        // failure (never a real link) exactly like a genuinely unmatched
+        // reference, not silently skipped: it still needs its own
+        // literal-text-or-independent-replay fallback below.
+        const blocked = this._hasRealEnclosingA(a, container) || a.querySelector('a[href]:not([href="#"])');
+        const def = !blocked ? this.refDefs[key] : null;
         if (def) {
           a.href = def.url; if (def.title) a.title = def.title;
           delete a.dataset.refKey; delete a.dataset.refRaw;
@@ -3075,9 +3123,12 @@ class MarkdownStreamer {
         }
       });
 
-      container.querySelectorAll('a[data-implicit-ref]').forEach(a => {
+      Array.from(container.querySelectorAll('a[data-implicit-ref]')).reverse().forEach(a => {
         const key = a.dataset.implicitRef;
-        const def = this.refDefs[key];
+        // Same innermost-first "link cannot contain link" check as the
+        // a[href="#"] pass just above.
+        const blocked = this._hasRealEnclosingA(a, container) || a.querySelector('a[href]:not([href="#"])');
+        const def = !blocked ? this.refDefs[key] : null;
         const trail = a.dataset.failTrail; // see the 'url' case's own comment
         if (def) {
           a.href = def.url; if (def.title) a.title = def.title;
@@ -3117,6 +3168,25 @@ class MarkdownStreamer {
     }
   }
 
+  // Walks UP from `a`'s parent (not `a` itself), bounded by `root`, looking
+  // for an ancestor <a> that's already a genuine, resolved real link (a
+  // real href, not just the "#" placeholder a still-deferred one carries)
+  // — used by _resolveDeferredIn()'s own two <a>-resolution passes to
+  // enforce "a link cannot contain a link" even when the enclosing one
+  // only became real LATER than this one was originally opened (an inline
+  // "(url)" form resolves synchronously the instant it's typed, live,
+  // while a deferred reference/shortcut inside its label may still be
+  // waiting on a definition declared further down the document — see
+  // _finalizeShortcutRef()'s own, earlier "is my label's nested bracket
+  // already a real link" check, which this is the finalize()-time
+  // equivalent of, for exactly the cases that check couldn't see yet).
+  _hasRealEnclosingA(a, root) {
+    for (let n = a.parentNode; n && n !== root.parentNode; n = n.parentNode) {
+      if (n.nodeType === 1 && n.tagName === 'A' && n.hasAttribute('href') && n.getAttribute('href') !== '#') return true;
+    }
+    return false;
+  }
+
   // Walks UP from el's parent (not el itself) looking for an enclosing
   // <a> — used to tell a NESTED bracket attempt (one opened while
   // another link was already open, see case '[') apart from a top-level
@@ -3133,22 +3203,25 @@ class MarkdownStreamer {
   // Resolves the currently-open link attempt as a shortcut reference
   // ("[label]" with nothing else — no "(...)" or "[...]" — following),
   // called once from 'expect_paren' whenever nothing valid follows the
-  // label's own "]". A NESTED attempt (opened while another link was
-  // already open, see case '[') can't defer resolution to finalize()
-  // the way a top-level one normally does (data-implicit-ref) — whether
-  // it resolves decides right now whether the ENCLOSING link is even
-  // allowed to succeed (its own eventual "]" checks via
-  // querySelector('a') for a real nested link), so it's checked
-  // immediately against refDefs as they stand so far instead. Matches
-  // real-world usage (a definition a nested bracket references is
-  // essentially never declared LATER in the document) at the cost of
-  // the rare forward-reference case.
+  // label's own "]". Deferred to finalize()'s data-implicit-ref pass, same
+  // as a top-level "[label]" shortcut — whether it resolves can depend on
+  // a reference definition declared LATER in the document, regardless of
+  // nesting (CommonMark #559: "[[*foo* bar]]" whose "*foo* bar" definition
+  // appears after the paragraph using it) — UNLESS `a` already contains a
+  // genuine, already-successfully-resolved nested link (a real <a href>,
+  // not another still-deferred data-implicit-ref/href="#" placeholder —
+  // see querySelector's own selector), in which case CommonMark's "a link
+  // cannot contain a link" is unconditional and immediate: nothing to
+  // defer, this one can never become a link no matter what refDefs ends up
+  // holding, and finalize()'s own "does my label contain a nested real
+  // link" checks (a.querySelector('a') at the various OTHER call sites —
+  // 'ref_id'/'url' cases, _resolveDeferredIn()) need this decided right
+  // now, not left as an <a> tag they'd otherwise (wrongly) also count as
+  // "contains a link" while it's still only tentatively deferred.
   _finalizeShortcutRef() {
     const a = this.dom.find('A');
     if (!a) { this._resetLinkUrl(); return; }
-    if (a.querySelector('a') || this._findEnclosingA(a)) {
-      const def = !a.querySelector('a') ? this.refDefs[this._normalizeRefKey(this.linkBuf)] : null;
-      if (def) { a.href = def.url; if (def.title) a.title = def.title; this._pop(a); this._resetLinkUrl(); return; }
+    if (a.querySelector('a[href]:not([href="#"])')) {
       a.insertBefore(document.createTextNode('['), a.firstChild);
       a.appendChild(document.createTextNode(']'));
       this.abortLinkElement(null);
