@@ -3393,7 +3393,24 @@ class MarkdownStreamer {
       }
     }
     if (len > 0) {
-      if (canOpen) {
+      // A run that can neither open NOR close anything is dead on arrival —
+      // written immediately as literal text, since nothing will ever revisit
+      // it. A run that COULD close (even though, right here, right now, no
+      // local opener was found) is kept as a placeholder instead, just like
+      // a genuine opener — see _retryEmphasisClosers()/_flushEmphasis()
+      // below: a bracket "[" that's currently open (still mid-label, not
+      // yet decided success/failure) commits eagerly to a real, live-nested
+      // <a> element (see case '[' in onLinkChar), which acts as a DOM
+      // container boundary this delimiter-matching sibling-walk can't see
+      // past — but CommonMark's real algorithm keeps a flat delimiter stack
+      // regardless of brackets, so a "*" opener BEFORE an unresolved "[" and
+      // a "*" closer INSIDE it (not yet matchable locally, since they're on
+      // opposite sides of the live <a>) must still be able to pair once the
+      // bracket's own fate is decided — immediately, if it fails and
+      // unwraps back to flat text (CommonMark #523: "*foo [bar* baz]"), or
+      // deferred to finalize(), if resolution itself was deferred waiting
+      // on a reference definition declared later in the document.
+      if (canOpen || canClose) {
         const node = document.createComment('em');
         node._emBase = baseChar; node._emLen = len; node._emCanOpen = canOpen; node._emCanClose = canClose;
         this.dom.current.appendChild(node);
@@ -3404,14 +3421,19 @@ class MarkdownStreamer {
     this.textNode = null;
   }
 
-  // Walks DIRECT children of dom.current backward (real siblings, not a
-  // buffer) for the nearest still-open run that could pair with a closer of
+  // Walks backward from `node` (inclusive) via previousSibling for the
+  // nearest still-open run that could pair with a closer of
   // `closerLen`/`closerCanOpen` — applying the "multiple of 3" rule (6.2
   // rules 9/10): if either side can both open and close, and the two
   // lengths sum to a multiple of 3, the pairing is only valid if BOTH
-  // lengths individually are also multiples of 3.
-  _findOpenerSibling(baseChar, closerLen, closerCanOpen) {
-    for (let n = this.dom.current.lastChild; n; n = n.previousSibling) {
+  // lengths individually are also multiples of 3. Shared by the live,
+  // eager close-on-arrival path (_findOpenerSibling, starting from
+  // dom.current's last child) and the retroactive cross-boundary retry
+  // (_retryEmphasisClosers, starting from an existing closer placeholder's
+  // own previous sibling) — both are the exact same search, just anchored
+  // at a different starting point.
+  _findOpenerFrom(node, baseChar, closerLen, closerCanOpen) {
+    for (let n = node; n; n = n.previousSibling) {
       if (n.nodeType !== 8 || n._emBase !== baseChar || !n._emCanOpen || n._emLen <= 0) continue;
       if (n._emCanClose || closerCanOpen) {
         const sum = n._emLen + closerLen;
@@ -3421,15 +3443,64 @@ class MarkdownStreamer {
     }
     return null;
   }
+  // Walks DIRECT children of dom.current backward (real siblings, not a
+  // buffer) for the nearest still-open run — see _findOpenerFrom() above.
+  _findOpenerSibling(baseChar, closerLen, closerCanOpen) {
+    return this._findOpenerFrom(this.dom.current.lastChild, baseChar, closerLen, closerCanOpen);
+  }
 
-  // Wraps everything between `openerNode` and the current end of its parent
-  // (i.e. everything typed since the opener) in a new <em>/<strong> element.
-  _wrapDelimRange(openerNode, tag) {
+  // Wraps everything between `openerNode` and `endNode` (exclusive) — or,
+  // if `endNode` is omitted, everything up to the current end of
+  // openerNode's parent (i.e. everything typed since the opener, for the
+  // live eager-close path where the closer IS the last thing written) — in
+  // a new <em>/<strong> element. `endNode` is needed by the retroactive
+  // cross-boundary retry (_retryEmphasisClosers), where the closer being
+  // matched is an EXISTING placeholder that may not be its container's
+  // last child (more content can already follow it), so wrapping "to the
+  // end" would wrongly scoop up that later content too.
+  _wrapDelimRange(openerNode, tag, endNode = null) {
     const el = document.createElement(tag);
     openerNode.parentNode.insertBefore(el, openerNode.nextSibling);
     let n = el.nextSibling;
-    while (n) { const next = n.nextSibling; el.appendChild(n); n = next; }
+    while (n && n !== endNode) { const next = n.nextSibling; el.appendChild(n); n = next; }
     this.textNode = null;
+  }
+
+  // Gives every leftover "closer" placeholder in `root` (one that, at the
+  // moment it originally streamed in, already tried — and failed — to find
+  // a matching opener among its THEN-current DOM siblings) a fresh chance
+  // to find one now, in left-to-right document order — exactly replicating
+  // what the live eager-close path already does, just re-run after the
+  // fact. A no-op for the ordinary case (nothing changed since the
+  // original failed attempt, so the same search just fails again the same
+  // way) — it only actually finds something NEW when a container boundary
+  // that blocked the original search (an unresolved link/bracket's live
+  // <a> element) has SINCE been unwrapped back to flat text (see
+  // abortLinkElement()/_unwrapBracket() and their call sites), exposing an
+  // opener that was previously on the other side of it. Must run BEFORE
+  // _flushEmphasis()'s own leftover-to-literal sweep, in the same pass,
+  // since a closer this finds a home for is no longer "leftover" at all.
+  _retryEmphasisClosers(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+    const closers = [];
+    let n;
+    while ((n = walker.nextNode())) { if (n._emBase && n._emCanClose && n._emLen > 0) closers.push(n); }
+    for (const node of closers) {
+      if (!node.parentNode || node._emLen <= 0) continue;
+      let len = node._emLen;
+      while (len > 0) {
+        const opener = this._findOpenerFrom(node.previousSibling, node._emBase, len, node._emCanOpen);
+        if (!opener) break;
+        const use = Math.min(2, opener._emLen, len);
+        let tag = use === 2 ? 'strong' : 'em';
+        if (use === 2 && node._emBase === '_' && !this.commonMarkStrict) tag = 'u';
+        this._wrapDelimRange(opener, tag, node);
+        opener._emLen -= use; len -= use;
+        if (opener._emLen <= 0) opener.remove();
+      }
+      node._emLen = len;
+      if (len <= 0) node.remove();
+    }
   }
 
   // Same idea as _flushEmphasis, for code spans: an opening backtick run
@@ -3490,6 +3561,30 @@ class MarkdownStreamer {
   // partner and is swept to literal text (or removed, if fully consumed).
   _flushEmphasis(root) {
     if (!root || root.nodeType !== 1) return;
+    // Give any closer stuck on the far side of a since-unwrapped bracket
+    // boundary a fresh chance to pair up (see _retryEmphasisClosers()) —
+    // must run BEFORE the leftover sweep below, since a closer it finds a
+    // home for is no longer leftover at all. Always safe/cheap to run
+    // unconditionally (see its own comment): a no-op unless some bracket
+    // boundary that blocked an earlier attempt has since gone away.
+    this._retryEmphasisClosers(root);
+    // If `root` still has a link/image bracket whose own success-or-failure
+    // is itself deferred to finalize()'s later _resolveDeferredIn() pass
+    // (data-implicit-ref / href="#"+data-ref-key — see there), don't sweep
+    // ANY leftover placeholder in this subtree to literal text yet — not
+    // just ones physically nested inside that bracket, but also, e.g., an
+    // OPENER sitting BEFORE it (CommonMark #523's "*" before "[bar* baz]",
+    // once that bracket's own failure is itself deferred to a reference
+    // definition declared later in the document — CommonMark #559 combined
+    // with #523): if the bracket eventually fails and unwraps back to flat
+    // text, that opener needs to still be there, un-swept, for
+    // _retryEmphasisClosers()'s cross-boundary retry to find. Deferred
+    // brackets are never split across blocks, so this check — scoped to
+    // THIS call's own `root` — already only defers the specific
+    // block(s)/subtree that actually still has one; finalize()'s own final
+    // _flushEmphasis(this.root) call (after every deferred bracket has been
+    // resolved one way or the other) always completes the sweep for real.
+    if (root.querySelector('a[data-implicit-ref], a[href="#"]')) return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
     const leftover = [];
     let n;
@@ -4998,6 +5093,20 @@ class MarkdownStreamer {
       while (a.firstChild) parent.insertBefore(a.firstChild, a);
       parent.removeChild(a);
     });
+
+    // Every deferred link/image bracket has now been resolved one way or
+    // the other (real link, or unwrapped back to flat literal text) — a
+    // second, final sweep catches any emphasis placeholder that the
+    // earlier per-block _flushEmphasis() calls above (and the one at the
+    // very start of this function) had to leave alone specifically because
+    // `root` still had a bracket whose fate was unknown at the time (see
+    // _flushEmphasis()'s own querySelector guard) — giving it the SAME
+    // cross-boundary retry chance _flushEmphasis() already gives a
+    // bracket that fails immediately, live, mid-stream (CommonMark #523),
+    // now that a bracket whose failure was itself deferred to the
+    // resolution pass just above (CommonMark #559) has ALSO had a chance
+    // to unwrap.
+    this._flushEmphasis(this.root);
 
     if (Object.keys(this.abbrMap).length > 0) this.applyAbbrs(this.root);
     this.renderFootnotes();
