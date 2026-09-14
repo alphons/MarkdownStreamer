@@ -76,6 +76,19 @@ function normalize(html) {
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/>\s+</g, '><')
+    // A spec "expected" string that legitimately closes a <p> right after a
+    // literal, text-only "</pre>" (i.e. the </pre> is meant as plain
+    // characters inside the paragraph, not a real tag boundary) can't be
+    // told apart from a genuine tag by a real HTML5 parser: reparsing it
+    // sees </pre> as an actual closing tag, which auto-closes the <p> early
+    // (implied end tags) and then synthesizes a spurious empty <p></p> for
+    // the reference string's own, now-orphaned closing </p>. A DOM-based
+    // parser like md4.js never emits that redundant close (its </pre> and
+    // </p> are real, individually-tracked tree operations, not concatenated
+    // text), so it can never produce this artifact — strip it from both
+    // sides so it can't spuriously distinguish two outputs that are
+    // otherwise identical.
+    .replace(/<\/pre><p><\/p>/g, '</pre>')
     .trim();
 }
 
