@@ -1,5 +1,5 @@
 /**
- * md v4.0.2 - a markdown streaming parser
+ * md v4.0.3 - a markdown streaming parser
  * Copyright (c) 2025-2026, Alphons van der Heijden
  * https://git.heijden.com/alphons/MarkdownStreamer.git
  */
@@ -2950,7 +2950,7 @@ class MarkdownStreamer {
           }
           const def = this.refDefs[refKey];
           if (a) {
-            if (def) { a.href = def.url; if (def.title) a.title = def.title; }
+            if (def) { this._setHref(a, def.url); if (def.title) a.title = def.title; }
             else {
               a.href = '#'; a.dataset.refKey = refKey;
               // Full reference form ("[label][ref]", as opposed to
@@ -3026,7 +3026,7 @@ class MarkdownStreamer {
             this._abortUrlToLiteralReplay();
           }
           else {
-            if (a) { a.href = result.url; if (result.title) a.title = result.title; this._pop(a); }
+            if (a) { this._setHref(a, result.url); if (result.title) a.title = result.title; this._pop(a); }
             this._resetLinkUrl();
           }
         }
@@ -3272,7 +3272,7 @@ class MarkdownStreamer {
         const blocked = this._hasRealEnclosingA(a, container) || a.querySelector('a[href]:not([href="#"])');
         const def = !blocked ? this.refDefs[key] : null;
         if (def) {
-          a.href = def.url; if (def.title) a.title = def.title;
+          this._setHref(a, def.url); if (def.title) a.title = def.title;
           delete a.dataset.refKey; delete a.dataset.refRaw;
           changed = true;
         } else if (a.dataset.refKey) {
@@ -3307,7 +3307,7 @@ class MarkdownStreamer {
         const def = !blocked ? this.refDefs[key] : null;
         const trail = a.dataset.failTrail; // see the 'url' case's own comment
         if (def) {
-          a.href = def.url; if (def.title) a.title = def.title;
+          this._setHref(a, def.url); if (def.title) a.title = def.title;
           a.removeAttribute('data-implicit-ref'); a.removeAttribute('data-fail-trail');
           // A malformed inline "(...)" that fell back to a shortcut
           // reference which DID resolve (example #568) — the "(...)" was
@@ -3986,6 +3986,11 @@ class MarkdownStreamer {
     } else this.fallbackToParagraph();
   }
   initAnchor(a)         { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+  // In-page "#anchor" links must scroll, not open a new tab.
+  _setHref(a, url) {
+    a.href = url;
+    if (url.startsWith('#') && a.target === '_blank') { a.removeAttribute('target'); a.removeAttribute('rel'); }
+  }
   flushDefPending() {
     if (!this.defPending) return;
     const d = this.defPending;

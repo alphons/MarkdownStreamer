@@ -1,12 +1,12 @@
 # MarkdownStreamer
 
-![Version](https://img.shields.io/badge/version-4.0.2-blue)
+![Version](https://img.shields.io/badge/version-4.0.3-blue)
 ![Regression tests](https://img.shields.io/badge/regression%20tests-189%2F189-brightgreen)
 ![CommonMark conformance](https://img.shields.io/badge/CommonMark-652%2F652%20(100%25)-brightgreen)
 
 A lightweight, streaming Markdown parser that renders directly into the DOM — character by character, in real time. No dependencies, no build step.
 
-> **Version:** md v4.0.2
+> **Version:** md v4.0.3
 > **Author:** Alphons van der Heijden
 
 Badges are updated by hand from `tests/run/regression.js` and `tests/run/commonmark-report.js` — run both after any parser change and refresh the numbers above.
