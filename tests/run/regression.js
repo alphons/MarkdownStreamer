@@ -4,7 +4,14 @@
 // observed rendering bug; run `npm test` after any change to decideBlock()
 // or the inline state machine to catch reintroductions.
 const assert = require('assert');
-const { render, renderAsync } = require('./render');
+const { render: renderRaw, renderAsync: renderAsyncRaw } = require('./render');
+
+// Heading ids (see the anchor tests at the bottom) would otherwise have to be
+// spelled out in every heading expectation; strip them here, and use the raw
+// renderers in the tests that exercise them.
+const stripIds = (html) => html.replace(/(<h[1-6]) id="[^"]*"/g, '$1');
+const render = (md, opts) => stripIds(renderRaw(md, opts));
+const renderAsync = async (md) => stripIds(await renderAsyncRaw(md));
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -1071,7 +1078,29 @@ test('that trailing newline is dropped once the item gets wrapped into <p> by a 
   assert.strictEqual(html, '<ul><li><p>a</p><ul><li>b</li><li>c</li></ul></li><li><p>d</p><ul><li>e</li><li>f</li></ul></li></ul>');
 });
 
-// ── Runner ──────────────────────────────────────────────────────────────
+// ── In-page anchors: headings get ids, #links scroll instead of opening a tab ──
+test('headings get GitHub-style ids, duplicates numbered', () => {
+  const html = renderRaw("## Table of contents\n\n## Features\n\n## Features\n\n## What's new?\n");
+  assert.match(html, /<h2 id="table-of-contents">/);
+  assert.match(html, /<h2 id="features">/);
+  assert.match(html, /<h2 id="features-1">/);
+  assert.match(html, /<h2 id="whats-new">/);
+});
+
+test('#anchor links have no target/rel; external links keep them', () => {
+  const html = renderRaw('[a](#features) [b](http://x.y)');
+  assert.match(html, /<a href="#features">a<\/a>/);
+  assert.match(html, /<a target="_blank" rel="noopener noreferrer" href="http:\/\/x.y">b<\/a>/);
+});
+
+test('a link at the very start of a list item is a link, not literal text', () => {
+  const html = renderRaw('1. [Features](#features)\n2. [Installation](#installation)\n');
+  assert.strictEqual(countTag(html, 'a'), 2);
+  assert.match(html, /<li><a href="#features">Features<\/a><\/li>/);
+});
+
+// ── Runner ────────────────────────────────────────────────────────────────
+
 (async () => {
   let passed = 0;
   const failures = [];

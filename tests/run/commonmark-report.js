@@ -63,6 +63,8 @@ function normalize(html) {
     html
       .replace(/ target="_blank" rel="noopener noreferrer"/g, '')
       .replace(/ class="blk"/g, '')
+      // heading ids (anchor targets) are an extension, not in the spec output
+      .replace(/(<h[1-6]) id="[^"]*"/g, '$1')
       // A trailing text node (often just the source's own trailing "\n")
       // sitting after a </p> that auto-closed while an unclosed <a> (or
       // other formatting element) was still open triggers the HTML5

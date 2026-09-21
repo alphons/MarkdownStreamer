@@ -168,6 +168,8 @@ Setext H2
 ## Heading with closing hashes ##
 ```
 
+Every heading gets a GitHub-style `id` (lowercase, spaces to `-`, punctuation dropped, duplicates numbered `-1`, `-2`, ...), so a table of contents such as `[Features](#features)` jumps to `## Features`.
+
 ### Inline formatting
 
 | Syntax | Result |
@@ -205,6 +207,8 @@ https://example.com              <!-- bare URL (auto-detected) -->
 
 [ref]: https://www.google.com "optional title"
 ```
+
+External links open in a new tab (`target="_blank" rel="noopener noreferrer"`); in-page `#anchor` links do not, so they scroll in place.
 
 ### Images
 

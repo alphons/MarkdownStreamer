@@ -2149,7 +2149,7 @@ class MarkdownStreamer {
       if (b.length === 1 && b !== '[') {
         this._doneTaskCheck(); // fall through
       } else if (b.length <= 3 && !['[ ','[x','[X','[ ]','[x]','[X]'].some(s => b === s || s.startsWith(b))) {
-        this._doneTaskCheck(); this.writeText(b); return;
+        this._doneTaskCheck(); for (const c of b) this.onInlineChar(c); return;
       } else if (b.length === 4) {
         if (b === '[ ] ' || b === '[x] ' || b === '[X] ') {
           const li = this.dom.find('LI');
@@ -2157,7 +2157,7 @@ class MarkdownStreamer {
           const cb = document.createElement('input');
           cb.type = 'checkbox'; cb.disabled = true; cb.checked = b[1].toLowerCase() === 'x';
           this.dom.current.appendChild(cb); this.textNode = null;
-        } else { this.writeText(b); }
+        } else { this._doneTaskCheck(); for (const c of b) this.onInlineChar(c); return; }
         this._doneTaskCheck(); return;
       } else { return; }
       // b.length===1 && b!=='[': fall through to normal inline
@@ -4665,6 +4665,19 @@ class MarkdownStreamer {
     }
   }
 
+  // GitHub-style heading id (lowercase, spaces to "-", punctuation dropped,
+  // duplicates get -1, -2, ...) so "[x](#slug)" links have a target. Runs
+  // when the heading closes, since its text is only complete by then.
+  _slugHeading(h) {
+    if (!h || h.id || !/^H[1-6]$/.test(h.tagName)) return;
+    const slug = h.textContent.trim().toLowerCase()
+      .replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
+    if (!slug) return;
+    const seen = this.slugCounts || (this.slugCounts = {});
+    const n = seen[slug] = (seen[slug] === undefined ? -1 : seen[slug]) + 1;
+    h.id = n ? slug + '-' + n : slug;
+  }
+
   closeBlock() {
     this._trimIndentCode();
     this.flushInlinePending();
@@ -4676,6 +4689,7 @@ class MarkdownStreamer {
     this._popMarkers();
     this.textNode = null;
     this._flushEmphasis(this.lastBlockEl);
+    this._slugHeading(this.lastBlockEl);
     if (this.dom.depth() > 1) this._popToBlockContainer();
     // A block that just opened somewhere NOT inside the innermost
     // still-tracked list (most commonly: an HTML block, fence, or heading
@@ -5409,6 +5423,12 @@ class MarkdownStreamer {
     // resolution pass just above (CommonMark #559) has ALSO had a chance
     // to unwrap.
     this._flushEmphasis(this.root);
+
+    this.root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(h => this._slugHeading(h));
+    // In-page links ("[x](#features)") must scroll, not open a new tab.
+    this.root.querySelectorAll('a[href^="#"]').forEach(a => {
+      if (a.target === '_blank') { a.removeAttribute('target'); a.removeAttribute('rel'); }
+    });
 
     if (Object.keys(this.abbrMap).length > 0) this.applyAbbrs(this.root);
     this.renderFootnotes();
