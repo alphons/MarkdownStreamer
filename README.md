@@ -1,12 +1,12 @@
 # MarkdownStreamer
 
-![Version](https://img.shields.io/badge/version-4.0.3-blue)
+![Version](https://img.shields.io/badge/version-4.0.4-blue)
 ![Regression tests](https://img.shields.io/badge/regression%20tests-189%2F189-brightgreen)
 ![CommonMark conformance](https://img.shields.io/badge/CommonMark-652%2F652%20(100%25)-brightgreen)
 
 A lightweight, streaming Markdown parser that renders directly into the DOM — character by character, in real time. No dependencies, no build step.
 
-> **Version:** md v4.0.3
+> **Version:** md v4.0.4
 > **Author:** Alphons van der Heijden
 
 Badges are updated by hand from `tests/run/regression.js` and `tests/run/commonmark-report.js` — run both after any parser change and refresh the numbers above.
@@ -182,6 +182,8 @@ Every heading gets a GitHub-style `id` (lowercase, spaces to `-`, punctuation dr
 | `` `inline code` `` | `inline code` |
 | `x^sup^` | superscript |
 | `H~sub~` | subscript |
+
+`~`, `^`, `~~` and `==` only format when a closing partner exists; a lone `~` (as in `~476 B`) stays literal. Sub/superscript cannot contain whitespace, so `~a b~` and `x^a b^` are left as-is.
 | `***bold italic***` | ***bold italic*** |
 
 ### Hard line breaks

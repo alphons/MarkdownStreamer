@@ -1101,6 +1101,36 @@ test('a link at the very start of a list item is a link, not literal text', () =
 
 // ── Runner ────────────────────────────────────────────────────────────────
 
+test('a lone ~ (no closing partner) stays literal instead of opening <sub>', () => {
+  assert.strictEqual(
+    stripIds(renderRaw('Flat (~476 B) up to 100. The `Write()` call and `Wait` mode.')),
+    '<p>Flat (~476 B) up to 100. The <code>Write()</code> call and <code>Wait</code> mode.</p>');
+  assert.strictEqual(renderRaw('a ~b'), '<p>a ~b</p>');
+});
+
+test('matched ~ ^ ~~ pairs still render as sub/sup/s/mark', () => {
+  assert.strictEqual(renderRaw('H~2~O x^2^ ~~d~~'),
+    '<p>H<sub>2</sub>O x<sup>2</sup> <s>d</s></p>');
+});
+
+test('==mark== closes even right after a space-preceded "h"', () => {
+  assert.strictEqual(renderRaw('x ==h== y'), '<p>x <mark>h</mark> y</p>');
+});
+
+test('~ and ^ spanning whitespace stay literal (no sub/sup)', () => {
+  assert.strictEqual(renderRaw('~a b~ c'), '<p>~a b~ c</p>');
+  assert.strictEqual(renderRaw('x^a b^ c'), '<p>x^a b^ c</p>');
+});
+
+test('an emphasis closer pairs with an opener outside an unclosed ~', () => {
+  assert.strictEqual(renderRaw('**a ~b** c'), '<p><strong>a ~b</strong> c</p>');
+  assert.strictEqual(renderRaw('*a ~b* c'), '<p><em>a ~b</em> c</p>');
+});
+
+test('a lone ~ renders the same through the streaming path', async () => {
+  assert.strictEqual(await renderAsyncRaw('Flat (~476 B) and `x`.'), '<p>Flat (~476 B) and <code>x</code>.</p>');
+});
+
 (async () => {
   let passed = 0;
   const failures = [];

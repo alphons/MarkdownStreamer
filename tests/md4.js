@@ -1,5 +1,5 @@
 /**
- * md v4.0.3 - a markdown streaming parser
+ * md v4.0.4 - a markdown streaming parser
  * Copyright (c) 2025-2026, Alphons van der Heijden
  * https://git.heijden.com/alphons/MarkdownStreamer.git
  */
@@ -2338,10 +2338,13 @@ class MarkdownStreamer {
     if (ch === '=') {
       if (this.inlinePending && this.inlinePending[0] === '=') {
         this.inlinePending += ch;
+        this.prevCharWs = false;
         if (this.inlinePending.length > 2) this.flushInlinePending();
         return;
       }
-      if (!this.inlinePending) { this.inlinePending = '='; return; }
+      // prevCharWs cleared like the other markers do (see isMarkerChar()
+      // below), or "x ==h==" mistakes the "h" for the start of a bare URL.
+      if (!this.inlinePending) { this.inlinePending = '='; this.prevCharWs = false; return; }
       this.resolveInlinePending(ch); return;
     }
 
@@ -3670,6 +3673,16 @@ class MarkdownStreamer {
   _pushDelim(marker, baseChar, canOpen, canClose) {
     let len = marker.length;
     if (canClose) {
+      // An open ~/^/~~/== element around this closer with no matching opener
+      // inside it can't be closed by it — emphasis can't cross another
+      // element's boundary — but an opener OUTSIDE it can still pair with
+      // this closer, so revert the marker to literal text to expose it.
+      for (let el = this.dom.current; el._mdMarker && el._mdMarker[0] !== '`' && el !== this.dom.bottomStack; el = this.dom.current) {
+        if (this._findOpenerSibling(baseChar, len, canOpen)) break;
+        if (!this._findOpenerFrom(el.previousSibling, baseChar, len, canOpen)) break;
+        this.dom.current = el.parentNode;
+        this._unwrapMarker(el);
+      }
       while (len > 0) {
         const opener = this._findOpenerSibling(baseChar, len, canOpen);
         if (!opener) break;
@@ -3843,6 +3856,40 @@ class MarkdownStreamer {
     this._flushCodeSpans(root);
   }
 
+  // Non-code markers (~~, ~, ^, ==, __) open their element optimistically,
+  // like a code span does. One still open when the block ends never found a
+  // closer (a lone "~476 B"), so unwrap it back to its literal marker
+  // followed by its already-processed children.
+  _flushInlineMarkers(root) {
+    if (!root || root.nodeType !== 1) return;
+    const open = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let n;
+    while ((n = walker.nextNode())) { if (n._mdMarker && n.nodeName !== 'CODE') open.push(n); }
+    for (const el of open) this._unwrapMarker(el);
+  }
+
+  // Reverts a marker element (see _flushInlineMarkers()) to its literal
+  // marker text followed by its already-processed children.
+  _unwrapMarker(el) {
+    el.replaceWith(document.createTextNode(el._mdMarker), ...el.childNodes);
+    this.textNode = null;
+  }
+
+  // Closes the open marker element `el` with `marker`. Sub/superscript
+  // can't contain whitespace (Pandoc rule: "~a b~" is literal), so a "~"/"^"
+  // pair spanning any is reverted to literal text instead, closer included.
+  _closeInlineMarker(marker, el) {
+    if ((marker === '~' || marker === '^') && /\s/.test(el.textContent)) {
+      this.dom.current = el.parentNode;
+      this._unwrapMarker(el);
+      this.writeText(marker);
+      return;
+    }
+    el._mdMarker = null; // matched — no longer "open" for _flushInlineMarkers()
+    this._pop(el); this.textNode = null;
+  }
+
   // Called when a block's inline content is done (see closeBlock() and the
   // various paragraph/list-item/definition close points): any delimiter
   // placeholder left anywhere in `root`'s subtree — including nested inside
@@ -3857,6 +3904,7 @@ class MarkdownStreamer {
     // unconditionally (see its own comment): a no-op unless some bracket
     // boundary that blocked an earlier attempt has since gone away.
     this._retryEmphasisClosers(root);
+    this._flushInlineMarkers(root);
     // If `root` still has a link/image bracket whose own success-or-failure
     // is itself deferred to finalize()'s later _resolveDeferredIn() pass
     // (data-implicit-ref / href="#"+data-ref-key — see there), don't sweep
@@ -3902,7 +3950,7 @@ class MarkdownStreamer {
         // no flanking rules, just toggle open/close.
         const closeEl = this.findInlineClose(marker);
         if (closeEl !== null) {
-          this._pop(closeEl); this.textNode = null;
+          this._closeInlineMarker(marker, closeEl);
         } else {
           const tag = this.markerToTag(marker);
           if (tag) {
@@ -3944,7 +3992,7 @@ class MarkdownStreamer {
       return;
     }
     const closeEl = this.findInlineClose(marker);
-    if (closeEl !== null) { this._pop(closeEl); this.textNode = null; }
+    if (closeEl !== null) this._closeInlineMarker(marker, closeEl);
     else if (baseChar === '`') {
       // Unlike the other non-emphasis markers, a backtick run CAN validly
       // open right here even at this "abrupt boundary" (this function is
