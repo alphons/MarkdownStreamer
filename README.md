@@ -182,9 +182,9 @@ Every heading gets a GitHub-style `id` (lowercase, spaces to `-`, punctuation dr
 | `` `inline code` `` | `inline code` |
 | `x^sup^` | superscript |
 | `H~sub~` | subscript |
+| `***bold italic***` | ***bold italic*** |
 
 `~`, `^`, `~~` and `==` only format when a closing partner exists; a lone `~` (as in `~476 B`) stays literal. Sub/superscript cannot contain whitespace, so `~a b~` and `x^a b^` are left as-is.
-| `***bold italic***` | ***bold italic*** |
 
 ### Hard line breaks
 
