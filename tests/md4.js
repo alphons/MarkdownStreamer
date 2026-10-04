@@ -1,5 +1,5 @@
 /**
- * md v4.0.4 - a markdown streaming parser
+ * md v4.0.5 - a markdown streaming parser
  * Copyright (c) 2025-2026, Alphons van der Heijden
  * https://git.heijden.com/alphons/MarkdownStreamer.git
  */
@@ -2292,6 +2292,14 @@ class MarkdownStreamer {
 
     // HTML entity
     if (this.entityBuf !== null) {
+      // An entity body is only [#A-Za-z0-9]; anything else (e.g. the space in
+      // "A & B") means the "&" was literal, so flush it and handle ch normally.
+      if (!/[#A-Za-z0-9;]/.test(ch)) {
+        const lit = this.entityBuf; this.entityBuf = null;
+        this.writeText(lit); this.prevCharWs = false;
+        this.onInlineChar(ch);
+        return;
+      }
       this.entityBuf += ch;
       if (ch === ';') { this.writeText(this.decodeEntity(this.entityBuf)); this.entityBuf = null; this.prevCharWs = false; return; }
       if (this.entityBuf.length > 33) { this.writeText(this.entityBuf); this.entityBuf = null; }
