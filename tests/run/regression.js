@@ -1131,6 +1131,11 @@ test('a lone ~ renders the same through the streaming path', async () => {
   assert.strictEqual(await renderAsyncRaw('Flat (~476 B) and `x`.'), '<p>Flat (~476 B) and <code>x</code>.</p>');
 });
 
+test('a bare & followed by a non-entity char is literal and does not break emphasis', () => {
+  assert.strictEqual(renderRaw('**A & B** C'), '<p><strong>A &amp; B</strong> C</p>');
+  assert.strictEqual(renderRaw('a & b &copy;'), '<p>a &amp; b ©</p>');
+});
+
 (async () => {
   let passed = 0;
   const failures = [];
