@@ -1136,6 +1136,15 @@ test('a bare & followed by a non-entity char is literal and does not break empha
   assert.strictEqual(renderRaw('a & b &copy;'), '<p>a &amp; b ©</p>');
 });
 
+test('without md4-entities.js: basic and numeric entities decode, other named ones stay literal', () => {
+  const { MarkdownStreamer, document } = require('./render').loadMarkdownStreamer({ entities: false });
+  const el = document.getElementById('output');
+  const s = new MarkdownStreamer(el);
+  s.markdown('a &amp; b &lt; c &#169; &#x41; &copy;');
+  s.finalize();
+  assert.strictEqual(el.textContent.trim(), 'a & b < c © A &copy;');
+});
+
 (async () => {
   let passed = 0;
   const failures = [];

@@ -1,5 +1,5 @@
 /**
- * md v4.1.1 - a markdown streaming parser
+ * md v4.2.0 - a markdown streaming parser
  * Copyright (c) 2025-2026, Alphons van der Heijden
  * https://git.heijden.com/alphons/MarkdownStreamer.git
  */
@@ -7,6 +7,9 @@
 'use strict';
 
 // ─── Module-level constants ────────────────────────────────────────────────────
+// Minimal named-entity set used when the optional md4-entities.js (the full
+// HTML5 table, defining ENTITY_MAP) is not loaded; numeric references always work.
+const BASIC_ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&nbsp;': ' ' };
 // CommonMark HTML-block type 6: this exact tag-name list (not "pre" — that's
 // type 1 only) makes the block end at the next BLANK LINE, no matching
 // closing tag required.
@@ -4354,7 +4357,8 @@ class MarkdownStreamer {
 
   // ── Entity decoder ─────────────────────────────────────────────────────────
   decodeEntity(raw) {
-    if (ENTITY_MAP[raw]) return ENTITY_MAP[raw];
+    const map = typeof ENTITY_MAP !== 'undefined' ? ENTITY_MAP : BASIC_ENTITIES;
+    if (map[raw]) return map[raw];
     // CommonMark caps the digit count: 1-6 hex digits, 1-7 decimal digits —
     // anything longer isn't a valid numeric reference at all (stays literal),
     // not an "invalid code point" (which would become U+FFFD).

@@ -12,10 +12,10 @@ const ENTITIES_PATH = path.join(__dirname, '..', '..', 'src', 'md4-entities.js')
 // page, md4-entities.js (ENTITY_MAP) loads as its own <script> before
 // md4.js — classic scripts in the same document share one top-level const
 // scope, so concatenating the two source files here reproduces that.
-function loadMarkdownStreamer() {
+function loadMarkdownStreamer({ entities: withEntities = true } = {}) {
   const dom = new JSDOM('<!DOCTYPE html><div id="output"></div>');
   const { document } = dom.window;
-  const entities = fs.readFileSync(ENTITIES_PATH, 'utf8');
+  const entities = withEntities ? fs.readFileSync(ENTITIES_PATH, 'utf8') : '';
   const code = fs.readFileSync(MD4_PATH, 'utf8');
   const MarkdownStreamer = new Function(
     'document', 'DOMParser', 'NodeFilter',
