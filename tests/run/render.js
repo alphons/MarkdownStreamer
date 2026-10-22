@@ -3,8 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
 
-const MD4_PATH = path.join(__dirname, '..', 'md4.js');
-const ENTITIES_PATH = path.join(__dirname, '..', 'md4-entities.js');
+const MD4_PATH = path.join(__dirname, '..', '..', 'src', 'md4.js');
+const ENTITIES_PATH = path.join(__dirname, '..', '..', 'src', 'md4-entities.js');
 
 // Loads md4.js fresh (via Function, not require/eval) so each call gets an
 // isolated window/document pair — md4.js is written as a browser script
